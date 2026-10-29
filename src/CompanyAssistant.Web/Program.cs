@@ -1,0 +1,21 @@
+var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddHealthChecks();
+var app = builder.Build();
+app.Use(async (context, next) =>
+{
+    context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+    context.Response.Headers["Referrer-Policy"] = "no-referrer";
+    context.Response.Headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
+    await next();
+});
+app.UseDefaultFiles();
+app.UseStaticFiles();
+app.MapHealthChecks("/health/live");
+app.MapGet("/api/branding", (IConfiguration config) => new
+{
+    companyName = config["Branding:CompanyName"] ?? "NovaWorks",
+    assistantName = config["Branding:AssistantName"] ?? "Nova Assistant",
+    logoUrl = "/logo.svg",
+    defaultLanguage = config["Branding:DefaultLanguage"] == "en" ? "en" : "es"
+});
+app.Run();
