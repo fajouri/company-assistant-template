@@ -1,17 +1,26 @@
 # Company Assistant Template
 
-A configurable corporate assistant built with ASP.NET Core, React, Azure Foundry and a restricted MCP integration.
+Configurable corporate assistant foundation: ASP.NET Core, React and PostgreSQL/pgvector.
 
-## Status
+## Run locally
+Requires Docker Engine with Compose.
+1. Copy `.env.example` to `.env` and set a strong local database password.
+2. Run `docker compose up --build -d --wait`.
+3. Open http://localhost:8080.
+4. Stop with `docker compose down`. Database data persists; do not use `-v` unless you intend to delete it.
 
-Initial repository bootstrap. No working chatbot, authentication or production deployment is provided yet.
+This first delivery is an interface shell, not a functioning AI assistant. No login, model calls, retrieval or MCP are implemented. The local interface displays fictional data only. Do not deploy publicly or load company documents yet.
 
-## Planned delivery
+## Development
+Node 22+; .NET 10 SDK.
+`cd frontend && npm ci --no-audit --no-fund && npm run build`
+`dotnet build src/CompanyAssistant.Web`
+Docker uses the same frontend build and serves its output from ASP.NET Core; no Node server runs in production.
 
-1. Runnable Docker foundation and accessible configurable interface.
-2. Microsoft Entra ID and resource authorization.
-3. Document ingestion, retrieval and verified citations.
-4. Read-only MCP tools scoped to the authenticated employee.
-5. Audit, observability, retention and evaluation.
+## Configuration
+Public branding is in `src/CompanyAssistant.Web/appsettings.json`. Never place secrets there. Available interface languages: es, en. The logo is a local static asset. Configuration is read at startup.
 
-One company per deployment. Demonstration data must be fictional. Security and GDPR readiness require implementation, testing and organizational review; this project does not claim certification or compliance.
+## Roadmap
+See [implementation plan](docs/implementation-plan.md), [architecture](docs/architecture.md), [security](docs/security-and-privacy.md), and [scope](docs/product-scope.md).
+
+This template does not claim GDPR compliance or certification. Production readiness requires implementation, testing and organizational review.

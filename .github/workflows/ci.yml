@@ -1,0 +1,37 @@
+name: Foundation
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      POSTGRES_PASSWORD: ci-fictional-database-password
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: npm ci --no-audit --no-fund
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+      - run: dotnet build src/CompanyAssistant.Web -c Release
+      - name: Verify branding logo validation and static assets
+        run: python3 tests/branding_logo_test.py
+      - name: Build and smoke test containers
+        run: |
+          docker compose up --build -d --wait
+          for attempt in $(seq 1 30); do
+            if curl --fail http://localhost:8080/health/live; then break; fi
+            sleep 2
+          done
+          curl --fail http://localhost:8080/health/live
+          curl --fail http://localhost:8080/api/branding
+          curl --fail http://localhost:8080/ | grep 'id="root"'
+          docker compose exec -T db psql -U assistant -d assistant -c "SELECT extname FROM pg_extension WHERE extname = 'vector';"
+      - if: always()
+        run: docker compose down
