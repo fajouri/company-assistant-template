@@ -20,6 +20,8 @@ jobs:
       - run: npm run build
         working-directory: frontend
       - run: dotnet build src/CompanyAssistant.Web -c Release
+      - name: Verify branding logo validation and static assets
+        run: python3 tests/branding_logo_test.py
       - name: Build and smoke test containers
         run: |
           docker compose up --build -d --wait

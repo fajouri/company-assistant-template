@@ -15,7 +15,7 @@ app.MapGet("/api/branding", (IConfiguration config) => new
 {
     companyName = config["Branding:CompanyName"] ?? "NovaWorks",
     assistantName = config["Branding:AssistantName"] ?? "Nova Assistant",
-    logoUrl = "/logo.svg",
+    logoUrl = LocalLogoPath.OrDefault(config["Branding:LogoUrl"]),
     defaultLanguage = config["Branding:DefaultLanguage"] == "en" ? "en" : "es"
 });
 app.Run();
