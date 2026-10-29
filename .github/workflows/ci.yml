@@ -5,6 +5,8 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      POSTGRES_PASSWORD: ci-fictional-database-password
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -19,8 +21,6 @@ jobs:
         working-directory: frontend
       - run: dotnet build src/CompanyAssistant.Web -c Release
       - name: Build and smoke test containers
-        env:
-          POSTGRES_PASSWORD: ci-fictional-database-password
         run: |
           docker compose up --build -d --wait
           for attempt in $(seq 1 30); do
