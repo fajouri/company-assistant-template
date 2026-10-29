@@ -1,7 +1,7 @@
 FROM node:22-bookworm-slim AS ui
 WORKDIR /ui
 COPY frontend/package*.json ./
-RUN npm install --no-audit --no-fund
+RUN npm ci --no-audit --no-fund
 COPY frontend/ ./
 RUN npm run build
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build

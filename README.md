@@ -13,7 +13,7 @@ This first delivery is an interface shell, not a functioning AI assistant. No lo
 
 ## Development
 Node 22+; .NET 10 SDK.
-`cd frontend && npm install && npm run build`
+`cd frontend && npm ci --no-audit --no-fund && npm run build`
 `dotnet build src/CompanyAssistant.Web`
 Docker uses the same frontend build and serves its output from ASP.NET Core; no Node server runs in production.
 
