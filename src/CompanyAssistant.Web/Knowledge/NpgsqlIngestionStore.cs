@@ -196,13 +196,15 @@ internal sealed class NpgsqlIngestionStore : IIngestionStore, IAsyncDisposable
 
         // The date comparison runs in PostgreSQL against CURRENT_DATE so it uses exactly the
         // same "today" reference as the retrieval queries (effective_date <= CURRENT_DATE).
-        // Retire only when the previous version is currently effective and the incoming date
-        // is still in the future; otherwise the previous version is already hidden (or the
-        // incoming date does not remove access) and no retirement is required.
+        // Retire when the effective date is delayed into the future (incoming date later than
+        // the stored date and still in the future) so the previous version cannot stay — or later
+        // become — queryable before the new date. This covers both a currently effective version
+        // pushed into the future and a future version pushed further into the future, whose
+        // earlier date would otherwise become visible first.
         await using var command = new NpgsqlCommand(
             "UPDATE documents SET deleted_at = now(), updated_at = now() " +
             "WHERE document_id = $1 AND deleted_at IS NULL " +
-            "AND effective_date <= CURRENT_DATE AND $2 > CURRENT_DATE",
+            "AND $2 > effective_date AND $2 > CURRENT_DATE",
             connection, transaction);
         command.Parameters.AddWithValue(documentId);
         command.Parameters.AddWithValue(incomingEffectiveDate);

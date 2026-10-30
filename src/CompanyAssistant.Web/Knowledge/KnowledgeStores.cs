@@ -18,10 +18,11 @@ internal interface IIngestionStore
     // ingestion re-publishes the document.
     Task RetireAsync(string documentId, CancellationToken ct);
 
-    // Retires the currently effective previous version when the incoming effective date is in
-    // the future relative to PostgreSQL's CURRENT_DATE (the same reference the retrieval queries
-    // use). Used when a content change pushes the effective date forward and the new content
-    // cannot yet be embedded, so the stale previous version cannot stay queryable.
+    // Retires the previous version when a content change delays the effective date into the
+    // future (incoming date later than the stored date and still in the future relative to
+    // PostgreSQL's CURRENT_DATE, the same reference the retrieval queries use). This covers both
+    // a currently effective version pushed into the future and a future version pushed further
+    // into the future, whose earlier date would otherwise become visible before the new date.
     Task RetireIfFutureEffectiveAsync(string documentId, DateOnly incomingEffectiveDate, CancellationToken ct);
 
     Task<int> SoftDeleteMissingAsync(IReadOnlySet<string> seenSourcePaths, CancellationToken ct);

@@ -79,10 +79,11 @@ internal sealed class IngestionService(
             }
 
             // The content changed. If the incoming metadata removes access the previous version
-            // granted (a revocation, a different access policy, or an effective date pushed into
-            // the future), retire the previous version now so it cannot remain queryable under its
-            // old approval state, access policy or effective date. The future-date check runs in
-            // PostgreSQL against CURRENT_DATE so it matches the retrieval queries exactly.
+            // granted (a revocation, a different access policy, or an effective date delayed
+            // into the future), retire the previous version now so it cannot remain — or later
+            // become — queryable under its old approval state, access policy or effective date.
+            // The future-date check runs in PostgreSQL against CURRENT_DATE so it matches the
+            // retrieval queries exactly.
             if (existing is not null && RetiresAccess(existing, parsed.Metadata))
             {
                 await store.RetireAsync(existing.DocumentId, ct);

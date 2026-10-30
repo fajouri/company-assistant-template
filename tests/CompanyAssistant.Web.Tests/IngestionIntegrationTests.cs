@@ -402,6 +402,109 @@ public sealed class IngestionIntegrationTests(PostgresDatabaseFixture fixture)
         Assert.Equal(new DateOnly(2000, 1, 1), source.EffectiveDate);
     }
 
+    [Fact]
+    public async Task Future_to_later_future_date_change_retires_previous_version_when_embeddings_fail()
+    {
+        await fixture.ResetAsync();
+        using var temp = new TempDirectory();
+        var path = Path.Combine(temp.Path, "a.md");
+        File.WriteAllText(path, MarkdownFixtures.Policy("it-future-delay", effectiveDate: "2999-01-01", body: "# One\n\nOriginal body.\n"));
+
+        var embeddings = new FakeEmbeddingClient();
+        await using var store = fixture.CreateIngestionStore();
+        var service = new IngestionService(store, embeddings, new IngestionOptions(temp.Path, 1_048_576, 6000));
+        await service.RunAsync(CancellationToken.None);
+
+        await using var retrieval = fixture.CreateRetrievalStore();
+        // The previous version is future-dated, so it is not queryable yet.
+        Assert.Null(await retrieval.GetSourceDocumentAsync("it-future-delay", [AccessPolicies.Employee], CancellationToken.None));
+
+        File.WriteAllText(path, MarkdownFixtures.Policy("it-future-delay", effectiveDate: "2999-12-31", body: "# Two\n\nChanged body.\n"));
+        embeddings.FailOnTexts.Add("Changed");
+        var report = await service.RunAsync(CancellationToken.None);
+
+        Assert.Equal(1, report.Pending);
+        // The previous version must be retired so it cannot become queryable when its original
+        // 2999-01-01 date arrives (retrieval filters deleted_at IS NULL before the date).
+        var stored = await fixture.GetStoredDocumentAsync("it-future-delay");
+        Assert.NotNull(stored);
+        Assert.NotNull(stored.DeletedAt);
+        Assert.Equal(new DateOnly(2999, 1, 1), stored.EffectiveDate);
+        Assert.False(await IsSearchableAsync(retrieval, "it-future-delay", "# One\n\nOriginal body.", [AccessPolicies.Employee]));
+        Assert.Null(await retrieval.GetSourceDocumentAsync("it-future-delay", [AccessPolicies.Employee], CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Future_to_later_future_date_change_recovers_and_stays_idempotent()
+    {
+        await fixture.ResetAsync();
+        using var temp = new TempDirectory();
+        var path = Path.Combine(temp.Path, "a.md");
+        File.WriteAllText(path, MarkdownFixtures.Policy("it-future-delay-recover", effectiveDate: "2999-01-01", body: "# One\n\nOriginal body.\n"));
+
+        var embeddings = new FakeEmbeddingClient();
+        await using var store = fixture.CreateIngestionStore();
+        var service = new IngestionService(store, embeddings, new IngestionOptions(temp.Path, 1_048_576, 6000));
+        await service.RunAsync(CancellationToken.None);
+        var versionsBefore = await fixture.CountVersionsAsync("it-future-delay-recover");
+
+        File.WriteAllText(path, MarkdownFixtures.Policy("it-future-delay-recover", effectiveDate: "2999-12-31", body: "# Two\n\nChanged body.\n"));
+        embeddings.FailOnTexts.Add("Changed");
+        var first = await service.RunAsync(CancellationToken.None);
+        Assert.Equal(1, first.Pending);
+
+        await using (var retrieval = fixture.CreateRetrievalStore())
+            Assert.Null(await retrieval.GetSourceDocumentAsync("it-future-delay-recover", [AccessPolicies.Employee], CancellationToken.None));
+
+        embeddings.FailOnTexts.Clear();
+        var second = await service.RunAsync(CancellationToken.None);
+        Assert.Equal(0, second.Pending);
+        Assert.Equal(versionsBefore + 1, await fixture.CountVersionsAsync("it-future-delay-recover"));
+
+        var stored = await fixture.GetStoredDocumentAsync("it-future-delay-recover");
+        Assert.NotNull(stored);
+        Assert.Equal("# Two\n\nChanged body.", stored.Content);
+        Assert.Equal(new DateOnly(2999, 12, 31), stored.EffectiveDate);
+        Assert.Null(stored.DeletedAt);
+
+        await using (var retrieval = fixture.CreateRetrievalStore())
+            Assert.Null(await retrieval.GetSourceDocumentAsync("it-future-delay-recover", [AccessPolicies.Employee], CancellationToken.None));
+
+        var third = await service.RunAsync(CancellationToken.None);
+        Assert.Equal(1, third.Unchanged);
+        Assert.Equal(versionsBefore + 1, await fixture.CountVersionsAsync("it-future-delay-recover"));
+    }
+
+    [Fact]
+    public async Task Not_delayed_future_date_change_does_not_retire_when_embeddings_fail()
+    {
+        await fixture.ResetAsync();
+        using var temp = new TempDirectory();
+        var path = Path.Combine(temp.Path, "a.md");
+        File.WriteAllText(path, MarkdownFixtures.Policy("it-future-not-delayed", effectiveDate: "2999-12-31", body: "# One\n\nOriginal body.\n"));
+
+        var embeddings = new FakeEmbeddingClient();
+        await using var store = fixture.CreateIngestionStore();
+        var service = new IngestionService(store, embeddings, new IngestionOptions(temp.Path, 1_048_576, 6000));
+        await service.RunAsync(CancellationToken.None);
+
+        await using var retrieval = fixture.CreateRetrievalStore();
+        Assert.Null(await retrieval.GetSourceDocumentAsync("it-future-not-delayed", [AccessPolicies.Employee], CancellationToken.None));
+
+        // The new date (2999-01-01) is earlier than the previous date (2999-12-31), so the
+        // effective date was not delayed: no retirement is required.
+        File.WriteAllText(path, MarkdownFixtures.Policy("it-future-not-delayed", effectiveDate: "2999-01-01", body: "# Two\n\nChanged body.\n"));
+        embeddings.FailOnTexts.Add("Changed");
+        var report = await service.RunAsync(CancellationToken.None);
+
+        Assert.Equal(1, report.Pending);
+        var stored = await fixture.GetStoredDocumentAsync("it-future-not-delayed");
+        Assert.NotNull(stored);
+        Assert.Null(stored.DeletedAt);
+        Assert.Equal(new DateOnly(2999, 12, 31), stored.EffectiveDate);
+        Assert.Equal("# One\n\nOriginal body.", stored.Content);
+    }
+
     private static async Task<bool> IsSearchableAsync(
         NpgsqlRetrievalStore retrieval,
         string documentId,

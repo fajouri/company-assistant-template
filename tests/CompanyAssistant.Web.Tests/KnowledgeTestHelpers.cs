@@ -101,7 +101,7 @@ internal sealed class FakeIngestionStore : IIngestionStore
         FutureEffectiveRetireCalls.Add(documentId);
         if (Documents.TryGetValue(documentId, out var existing)
             && existing.DeletedAt is null
-            && existing.EffectiveDate <= Today
+            && incomingEffectiveDate > existing.EffectiveDate
             && incomingEffectiveDate > Today)
         {
             Documents[documentId] = existing with { DeletedAt = DateTimeOffset.UtcNow };
