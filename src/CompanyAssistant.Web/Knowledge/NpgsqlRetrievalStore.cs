@@ -61,18 +61,22 @@ internal sealed class NpgsqlRetrievalStore : IRetrievalStore, IAsyncDisposable
         command.Parameters.AddWithValue(limit);
 
         var results = new List<RetrievedChunk>();
-        await using var reader = await command.ExecuteReaderAsync(ct);
-        while (await reader.ReadAsync(ct))
         {
-            results.Add(new RetrievedChunk(
-                reader.GetInt64(0),
-                reader.GetString(1),
-                reader.GetString(2),
-                reader.GetString(3),
-                reader.GetInt32(4),
-                reader.IsDBNull(5) ? null : reader.GetString(5),
-                reader.GetString(6),
-                reader.GetDouble(7)));
+            // Close the reader before committing: an open NpgsqlDataReader keeps the
+            // connection busy and CommitAsync would throw NpgsqlOperationInProgressException.
+            await using var reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+            {
+                results.Add(new RetrievedChunk(
+                    reader.GetInt64(0),
+                    reader.GetString(1),
+                    reader.GetString(2),
+                    reader.GetString(3),
+                    reader.GetInt32(4),
+                    reader.IsDBNull(5) ? null : reader.GetString(5),
+                    reader.GetString(6),
+                    reader.GetDouble(7)));
+            }
         }
 
         await transaction.CommitAsync(ct);
@@ -92,22 +96,24 @@ internal sealed class NpgsqlRetrievalStore : IRetrievalStore, IAsyncDisposable
         command.Parameters.AddWithValue(documentId);
         command.Parameters.AddWithValue(allowedPolicies.ToArray());
 
-        await using var reader = await command.ExecuteReaderAsync(ct);
-        if (!await reader.ReadAsync(ct))
+        SourceDocument? document = null;
         {
-            await transaction.CommitAsync(ct);
-            return null;
+            // Close the reader before committing: an open NpgsqlDataReader keeps the
+            // connection busy and CommitAsync would throw NpgsqlOperationInProgressException.
+            await using var reader = await command.ExecuteReaderAsync(ct);
+            if (await reader.ReadAsync(ct))
+            {
+                document = new SourceDocument(
+                    reader.GetString(0),
+                    reader.GetString(1),
+                    reader.GetString(2),
+                    reader.GetString(3),
+                    reader.GetFieldValue<DateOnly>(4),
+                    reader.GetString(5),
+                    reader.GetString(6),
+                    reader.GetString(7));
+            }
         }
-
-        var document = new SourceDocument(
-            reader.GetString(0),
-            reader.GetString(1),
-            reader.GetString(2),
-            reader.GetString(3),
-            reader.GetFieldValue<DateOnly>(4),
-            reader.GetString(5),
-            reader.GetString(6),
-            reader.GetString(7));
 
         await transaction.CommitAsync(ct);
         return document;

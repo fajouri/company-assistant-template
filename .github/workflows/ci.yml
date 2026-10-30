@@ -23,7 +23,7 @@ jobs:
       - run: npm run build
         working-directory: frontend
       - run: dotnet build src/CompanyAssistant.Web -c Release
-      - run: dotnet test tests/CompanyAssistant.Web.Tests -c Release
+      - run: dotnet test tests/CompanyAssistant.Web.Tests -c Release --filter "Category!=Database"
       - name: Verify branding logo validation and static assets
         run: python3 tests/branding_logo_test.py
       - name: Build and smoke test containers
@@ -43,5 +43,9 @@ jobs:
           docker compose exec -T db psql -U assistant -d assistant -c "SELECT count(*) AS applied_migrations FROM __schema_migrations;"
           docker compose exec -T db psql -U assistant -d assistant -c "SELECT rolname FROM pg_roles WHERE rolname IN ('assistant_ingest','assistant_runtime') ORDER BY rolname;"
           docker compose exec -T db psql -U assistant -d assistant -c "SELECT to_regclass('public.documents') AS documents, to_regclass('public.document_chunks') AS chunks;"
+      - name: Run database integration tests
+        env:
+          TEST_DATABASE_CONNECTION_STRING: Host=127.0.0.1;Port=5432;Database=assistant;Username=assistant;Password=ci-fictional-database-password
+        run: dotnet test tests/CompanyAssistant.Web.Tests -c Release --no-build --filter "Category=Database"
       - if: always()
         run: docker compose down

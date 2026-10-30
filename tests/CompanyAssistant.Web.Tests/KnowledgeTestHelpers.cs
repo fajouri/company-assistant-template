@@ -17,7 +17,7 @@ internal sealed class FakeEmbeddingClient(int dimensions = 1536) : IEmbeddingCli
             texts.Select(text => VectorFor(text, dimensions)).ToList());
     }
 
-    private static float[] VectorFor(string text, int dimensionCount)
+    public static float[] VectorFor(string text, int dimensionCount = 1536)
     {
         var vector = new float[dimensionCount];
         var hash = StableHash(text);
