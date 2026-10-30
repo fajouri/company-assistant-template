@@ -14,8 +14,9 @@ internal sealed class IngestionService(
         var scan = new MarkdownSourceScanner().Scan(options.SourcePath);
         var seenPaths = scan.Files.Select(file => file.RelativePath).ToHashSet(StringComparer.Ordinal);
 
-        var indexed = 0;
-        var unchanged = 0;
+        // Parse the entire input set before writing anything so duplicate document ids
+        // can be rejected before any upsert, soft-delete or embedding call.
+        var parsedFiles = new List<(MarkdownFile File, ParsedDocument Parsed)>();
         var oversized = 0;
         var failed = 0;
 
@@ -30,17 +31,25 @@ internal sealed class IngestionService(
                 continue;
             }
 
-            ParsedDocument parsed;
             try
             {
                 var bytes = File.ReadAllBytes(file.FullPath);
-                parsed = MarkdownParser.Parse(bytes, options.MaxChunkChars);
+                parsedFiles.Add((file, MarkdownParser.Parse(bytes, options.MaxChunkChars)));
             }
             catch (Exception ex) when (ex is FormatException or IOException or UnauthorizedAccessException)
             {
                 failed++;
-                continue;
             }
+        }
+
+        ThrowOnDuplicateDocumentIds(parsedFiles);
+
+        var indexed = 0;
+        var unchanged = 0;
+
+        foreach (var (file, parsed) in parsedFiles)
+        {
+            ct.ThrowIfCancellationRequested();
 
             var existing = await store.GetDocumentAsync(parsed.Metadata.DocumentId, ct);
             if (IsUnchanged(existing, parsed, file.RelativePath))
@@ -85,6 +94,30 @@ internal sealed class IngestionService(
 
         var deleted = await store.SoftDeleteMissingAsync(seenPaths, ct);
         return new IngestionReport(indexed, unchanged, deleted, scan.Rejected, oversized, failed);
+    }
+
+    private static void ThrowOnDuplicateDocumentIds(IReadOnlyList<(MarkdownFile File, ParsedDocument Parsed)> parsedFiles)
+    {
+        var pathsById = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        foreach (var (file, parsed) in parsedFiles)
+        {
+            if (!pathsById.TryGetValue(parsed.Metadata.DocumentId, out var paths))
+            {
+                paths = [];
+                pathsById[parsed.Metadata.DocumentId] = paths;
+            }
+
+            paths.Add(file.RelativePath);
+        }
+
+        var duplicates = pathsById
+            .Where(pair => pair.Value.Count > 1)
+            .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+            .Select(pair => $"id '{pair.Key}' appears in {string.Join(", ", pair.Value.OrderBy(path => path, StringComparer.Ordinal).Select(path => $"'{path}'"))}")
+            .ToList();
+
+        if (duplicates.Count > 0)
+            throw new InvalidOperationException($"Duplicate document ids detected: {string.Join("; ", duplicates)}.");
     }
 
     private static bool IsUnchanged(StoredDocument? existing, ParsedDocument incoming, string sourcePath) =>

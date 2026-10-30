@@ -228,4 +228,63 @@ public sealed class IngestionServiceTests
         Assert.Equal(upserts, store.Upserts.Count);
         Assert.Single(store.Documents);
     }
+
+    [Fact]
+    public async Task Duplicate_ids_are_rejected_before_any_write_or_embedding()
+    {
+        using var temp = new TempDirectory();
+        File.WriteAllText(Path.Combine(temp.Path, "a.md"), MarkdownFixtures.Policy("dup", body: "# One\n\nFirst body.\n"));
+        File.WriteAllText(Path.Combine(temp.Path, "b.md"), MarkdownFixtures.Policy("dup", body: "# Two\n\nSecond body.\n"));
+
+        var store = new FakeIngestionStore();
+        var embeddings = new FakeEmbeddingClient();
+        var service = CreateService(store, embeddings, temp.Path);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => service.RunAsync(CancellationToken.None));
+
+        Assert.Contains("id 'dup'", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("'a.md'", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("'b.md'", exception.Message, StringComparison.Ordinal);
+        Assert.Empty(store.Upserts);
+        Assert.Empty(store.MetadataUpdates);
+        Assert.Empty(store.SoftDeleteCalls);
+        Assert.Equal(0, embeddings.EmbedCallCount);
+    }
+
+    [Fact]
+    public async Task Duplicate_ids_with_different_acl_are_rejected()
+    {
+        using var temp = new TempDirectory();
+        File.WriteAllText(Path.Combine(temp.Path, "a.md"), MarkdownFixtures.Policy("dup", accessPolicy: "employee"));
+        File.WriteAllText(Path.Combine(temp.Path, "b.md"), MarkdownFixtures.Policy("dup", accessPolicy: "hr"));
+
+        var store = new FakeIngestionStore();
+        var embeddings = new FakeEmbeddingClient();
+        var service = CreateService(store, embeddings, temp.Path);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => service.RunAsync(CancellationToken.None));
+
+        Assert.Contains("id 'dup'", exception.Message, StringComparison.Ordinal);
+        Assert.Empty(store.Upserts);
+        Assert.Equal(0, embeddings.EmbedCallCount);
+    }
+
+    [Fact]
+    public async Task Duplicate_ids_are_rejected_regardless_of_input_order()
+    {
+        using var temp = new TempDirectory();
+        File.WriteAllText(Path.Combine(temp.Path, "b.md"), MarkdownFixtures.Policy("dup", body: "# Two\n\nSecond body.\n"));
+        File.WriteAllText(Path.Combine(temp.Path, "a.md"), MarkdownFixtures.Policy("dup", body: "# One\n\nFirst body.\n"));
+
+        var store = new FakeIngestionStore();
+        var service = CreateService(store, new FakeEmbeddingClient(), temp.Path);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => service.RunAsync(CancellationToken.None));
+
+        Assert.Contains("id 'dup'", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("'a.md'", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("'b.md'", exception.Message, StringComparison.Ordinal);
+        Assert.Empty(store.Upserts);
+        Assert.Empty(store.SoftDeleteCalls);
+    }
 }
