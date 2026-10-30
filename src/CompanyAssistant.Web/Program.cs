@@ -1,6 +1,11 @@
+using CompanyAssistant.Web.Identity;
+
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddHealthChecks();
+builder.AddEntraIdentity();
+
 var app = builder.Build();
+app.UseForwardedHeaders();
 app.Use(async (context, next) =>
 {
     context.Response.Headers["X-Content-Type-Options"] = "nosniff";
@@ -10,6 +15,10 @@ app.Use(async (context, next) =>
 });
 app.UseDefaultFiles();
 app.UseStaticFiles();
+app.UseAuthentication();
+app.UseAuthorization();
+app.UseAntiforgery();
+
 app.MapHealthChecks("/health/live");
 app.MapGet("/api/branding", (IConfiguration config) => new
 {
@@ -18,4 +27,7 @@ app.MapGet("/api/branding", (IConfiguration config) => new
     logoUrl = LocalLogoPath.OrDefault(config["Branding:LogoUrl"]),
     defaultLanguage = config["Branding:DefaultLanguage"] == "en" ? "en" : "es"
 });
+app.MapIdentityEndpoints();
 app.Run();
+
+public partial class Program;

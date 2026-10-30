@@ -3,6 +3,11 @@ services:
     build: .
     ports:
       - "127.0.0.1:8080:8080"
+    environment:
+      AzureAd__TenantId: ${ENTRA_TENANT_ID:?Set ENTRA_TENANT_ID in .env}
+      AzureAd__ClientId: ${ENTRA_CLIENT_ID:?Set ENTRA_CLIENT_ID in .env}
+      AzureAd__ClientSecret: ${ENTRA_CLIENT_SECRET:?Set ENTRA_CLIENT_SECRET in .env}
+      DataProtection__KeyPath: /tmp/company-assistant-keys
     read_only: true
     tmpfs:
       - /tmp
