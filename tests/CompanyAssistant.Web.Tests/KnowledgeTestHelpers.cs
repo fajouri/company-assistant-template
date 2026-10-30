@@ -2,9 +2,9 @@ using CompanyAssistant.Web.Knowledge;
 
 namespace CompanyAssistant.Web.Tests;
 
-internal sealed class FakeEmbeddingClient(int dimensions = 1536) : IEmbeddingClient
+internal sealed class FakeEmbeddingClient(int dimensions = 1536, bool isConfigured = true) : IEmbeddingClient
 {
-    public bool IsConfigured => true;
+    public bool IsConfigured => isConfigured;
 
     public HashSet<string> FailOnTexts { get; } = new(StringComparer.Ordinal);
 
@@ -13,6 +13,8 @@ internal sealed class FakeEmbeddingClient(int dimensions = 1536) : IEmbeddingCli
     public Task<IReadOnlyList<float[]>> EmbedAsync(IReadOnlyList<string> texts, CancellationToken ct)
     {
         EmbedCallCount++;
+        if (!IsConfigured)
+            throw new InvalidOperationException("Embeddings are not configured.");
         if (texts.Any(text => FailOnTexts.Any(marker => text.Contains(marker, StringComparison.Ordinal))))
             throw new InvalidOperationException("Forced embedding failure.");
 
@@ -46,6 +48,7 @@ internal sealed class FakeIngestionStore : IIngestionStore
     public Dictionary<string, StoredDocument> Documents { get; } = new(StringComparer.Ordinal);
     public List<IngestedDocument> Upserts { get; } = new();
     public List<IngestedDocument> MetadataUpdates { get; } = new();
+    public List<string> RetireCalls { get; } = new();
     public List<IReadOnlySet<string>> SoftDeleteCalls { get; } = new();
     public Action<IngestedDocument>? OnUpsert { get; set; }
 
@@ -78,6 +81,14 @@ internal sealed class FakeIngestionStore : IIngestionStore
             AccessPolicy = document.Metadata.AccessPolicy,
             DeletedAt = null
         };
+        return Task.CompletedTask;
+    }
+
+    public Task RetireAsync(string documentId, CancellationToken ct)
+    {
+        RetireCalls.Add(documentId);
+        var existing = Documents[documentId];
+        Documents[documentId] = existing with { DeletedAt = DateTimeOffset.UtcNow };
         return Task.CompletedTask;
     }
 

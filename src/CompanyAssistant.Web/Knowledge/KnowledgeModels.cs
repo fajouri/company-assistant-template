@@ -104,7 +104,8 @@ internal sealed record IngestionReport(
     int Deleted,
     int SkippedUnsafe,
     int Oversized,
-    int Failed)
+    int Failed,
+    int Pending)
 {
-    public bool HasFailures => SkippedUnsafe > 0 || Oversized > 0 || Failed > 0;
+    public bool HasFailures => SkippedUnsafe > 0 || Oversized > 0 || Failed > 0 || Pending > 0;
 }

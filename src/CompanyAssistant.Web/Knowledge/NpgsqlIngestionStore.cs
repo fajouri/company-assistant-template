@@ -172,6 +172,22 @@ internal sealed class NpgsqlIngestionStore : IIngestionStore, IAsyncDisposable
         await transaction.CommitAsync(ct);
     }
 
+    public async Task RetireAsync(string documentId, CancellationToken ct)
+    {
+        await using var connection = await _dataSource.Value.OpenConnectionAsync(ct);
+        await using var transaction = await connection.BeginTransactionAsync(ct);
+        await SetRoleAsync(connection, transaction, _role, ct);
+
+        await using var command = new NpgsqlCommand(
+            "UPDATE documents SET deleted_at = now(), updated_at = now() " +
+            "WHERE document_id = $1 AND deleted_at IS NULL",
+            connection, transaction);
+        command.Parameters.AddWithValue(documentId);
+        await command.ExecuteNonQueryAsync(ct);
+
+        await transaction.CommitAsync(ct);
+    }
+
     public async Task<int> SoftDeleteMissingAsync(IReadOnlySet<string> seenSourcePaths, CancellationToken ct)
     {
         await using var connection = await _dataSource.Value.OpenConnectionAsync(ct);

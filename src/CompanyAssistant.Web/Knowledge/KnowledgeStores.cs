@@ -12,6 +12,12 @@ internal interface IIngestionStore
     // even when the embeddings provider is unavailable.
     Task UpdateMetadataAsync(IngestedDocument document, CancellationToken ct);
 
+    // Retires (soft-deletes) a document so it stops being retrievable, without touching its
+    // chunks or version history. Used when a content change coincides with a revocation or
+    // access restriction and the new content cannot yet be embedded; a later successful
+    // ingestion re-publishes the document.
+    Task RetireAsync(string documentId, CancellationToken ct);
+
     Task<int> SoftDeleteMissingAsync(IReadOnlySet<string> seenSourcePaths, CancellationToken ct);
 }
 

@@ -46,7 +46,13 @@ internal sealed class IngestionService(
 
         var indexed = 0;
         var unchanged = 0;
+        var pending = 0;
+        var contentToIndex = new List<(MarkdownFile File, ParsedDocument Parsed)>();
 
+        // Phase 1 — apply revocations, access restrictions and metadata-only updates across
+        // the whole input set without depending on the embeddings provider. Content that still
+        // requires embeddings is collected for phase 2, so a later embedding failure cannot
+        // leave a revoked or restricted previous version queryable.
         foreach (var (file, parsed) in parsedFiles)
         {
             ct.ThrowIfCancellationRequested();
@@ -71,14 +77,44 @@ internal sealed class IngestionService(
                 continue;
             }
 
+            // The content changed. If the incoming metadata removes access the previous version
+            // granted (a revocation or a different access policy), retire the previous version
+            // now so it cannot remain queryable under its old approval state or access policy.
+            if (existing is not null && RetiresAccess(existing, parsed.Metadata))
+            {
+                await store.RetireAsync(existing.DocumentId, ct);
+            }
+
+            contentToIndex.Add((file, parsed));
+        }
+
+        // Phase 2 — index content that requires embeddings. Each document is attempted
+        // independently so one embedding failure does not prevent the others.
+        foreach (var (file, parsed) in contentToIndex)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            if (parsed.Chunks.Count > 0 && !embeddings.IsConfigured)
+            {
+                pending++;
+                continue;
+            }
+
             IReadOnlyList<IngestedChunk> chunks = [];
             if (parsed.Chunks.Count > 0)
             {
-                if (!embeddings.IsConfigured)
-                    throw new InvalidOperationException("Embeddings are not configured; cannot index Markdown content.");
-
-                var vectors = await embeddings.EmbedAsync(
-                    parsed.Chunks.Select(chunk => chunk.Content).ToArray(), ct);
+                IReadOnlyList<float[]> vectors;
+                try
+                {
+                    vectors = await embeddings.EmbedAsync(
+                        parsed.Chunks.Select(chunk => chunk.Content).ToArray(), ct);
+                }
+                catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException
+                    || (ex is OperationCanceledException && !ct.IsCancellationRequested))
+                {
+                    pending++;
+                    continue;
+                }
 
                 chunks = parsed.Chunks.Zip(vectors, (chunk, vector) =>
                     new IngestedChunk(chunk.SectionHeading, chunk.Content, Hashing.Sha256Hex(chunk.Content), vector))
@@ -93,8 +129,12 @@ internal sealed class IngestionService(
         }
 
         var deleted = await store.SoftDeleteMissingAsync(seenPaths, ct);
-        return new IngestionReport(indexed, unchanged, deleted, scan.Rejected, oversized, failed);
+        return new IngestionReport(indexed, unchanged, deleted, scan.Rejected, oversized, failed, pending);
     }
+
+    private static bool RetiresAccess(StoredDocument existing, PolicyMetadata incoming) =>
+        (existing.ApprovalState == ApprovalStates.Approved && incoming.ApprovalState != ApprovalStates.Approved)
+        || existing.AccessPolicy != incoming.AccessPolicy;
 
     private static void ThrowOnDuplicateDocumentIds(IReadOnlyList<(MarkdownFile File, ParsedDocument Parsed)> parsedFiles)
     {

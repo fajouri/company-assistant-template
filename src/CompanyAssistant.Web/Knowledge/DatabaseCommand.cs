@@ -39,13 +39,6 @@ internal static class IngestionRunner
         var embeddingSettings = EmbeddingSettings.Load(configuration);
         var databaseSettings = DatabaseSettings.Load(configuration);
 
-        if (!embeddingSettings.IsConfigured)
-        {
-            logger.LogError(
-                "Embeddings are not configured. Set Embeddings:Endpoint, Embeddings:ApiKey and Embeddings:Deployment.");
-            return 1;
-        }
-
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(120) };
         IEmbeddingClient embeddings = new FoundryEmbeddingClient(embeddingSettings, http);
         await using var store = new NpgsqlIngestionStore(databaseSettings);
@@ -54,8 +47,17 @@ internal static class IngestionRunner
         var report = await service.RunAsync(CancellationToken.None);
         logger.LogInformation(
             "Ingestion finished: {Indexed} indexed, {Unchanged} unchanged, {Deleted} deleted, " +
-            "{SkippedUnsafe} unsafe, {Oversized} oversized, {Failed} failed.",
-            report.Indexed, report.Unchanged, report.Deleted, report.SkippedUnsafe, report.Oversized, report.Failed);
+            "{SkippedUnsafe} unsafe, {Oversized} oversized, {Failed} failed, {Pending} pending.",
+            report.Indexed, report.Unchanged, report.Deleted, report.SkippedUnsafe, report.Oversized,
+            report.Failed, report.Pending);
+
+        if (report.Pending > 0)
+        {
+            logger.LogError(
+                "{Pending} document(s) could not be indexed because embeddings were unavailable or failed. " +
+                "Revocations and access restrictions have still been applied; the pending content will be retried on the next run.",
+                report.Pending);
+        }
 
         return report.HasFailures ? 1 : 0;
     }
