@@ -1,3 +1,4 @@
+using CompanyAssistant.Web.Chat;
 using CompanyAssistant.Web.Identity;
 using CompanyAssistant.Web.Knowledge;
 
@@ -10,6 +11,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddHealthChecks();
 builder.AddEntraIdentity();
 builder.AddKnowledge();
+builder.AddChat();
 
 var app = builder.Build();
 app.UseForwardedHeaders();
@@ -36,6 +38,7 @@ app.MapGet("/api/branding", (IConfiguration config) => new
 });
 app.MapIdentityEndpoints();
 app.MapKnowledgeEndpoints();
+app.MapChatEndpoints();
 app.Run();
 return 0;
 

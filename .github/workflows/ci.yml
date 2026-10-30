@@ -22,6 +22,8 @@ jobs:
         working-directory: frontend
       - run: npm run build
         working-directory: frontend
+      - run: npm test
+        working-directory: frontend
       - run: dotnet build src/CompanyAssistant.Web -c Release
       - run: dotnet test tests/CompanyAssistant.Web.Tests -c Release --filter "Category!=Database"
       - name: Verify branding logo validation and static assets

@@ -68,8 +68,8 @@ internal static class IdentityEndpoints
 
         endpoints.MapGet("/api/protected", () => new
             {
-                enabled = false,
-                message = "Chat remains disabled."
+                enabled = true,
+                message = "The chat endpoint is available to authorized users."
             })
             .RequireAuthorization(IdentityPolicies.ForPermission(AppPermissions.AssistantUse));
     }

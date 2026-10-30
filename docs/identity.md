@@ -10,7 +10,7 @@ The backend uses Microsoft.Identity.Web 4.16.1 with single-tenant OpenID Connect
 | `GET /api/session` | Returns `isAuthenticated: false` anonymously. An authenticated response contains validated tenant/object identifiers, display name, recognized roles and permissions, never tokens. |
 | `GET /api/auth/antiforgery` | Requires an assigned user and sets the protected antiforgery cookie plus a JavaScript-readable CSRF request-token cookie. |
 | `POST /api/auth/logout` | Requires an assigned user and a matching CSRF cookie/header or form field, then signs out of the local cookie and Entra. |
-| `GET /api/protected` | Requires `assistant.use`; returns `enabled: false` to prove authorization while chat remains disabled. |
+| `GET /api/protected` | Requires `assistant.use`; returns `enabled: true` to prove authorization. |
 
 The session cookie is `__Host-` prefixed, HTTP-only, Secure, SameSite=Lax and limited to eight hours with sliding expiration. OIDC correlation/nonce cookies are Secure and SameSite=None because the identity provider posts back cross-site. Session and antiforgery responses are not cached. Authentication libraries log at Warning or above; do not enable token/PII debug logging.
 
@@ -67,7 +67,7 @@ The Compose configuration accepts `ENTRA_TENANT_ID`, `ENTRA_CLIENT_ID` and `ENTR
 These steps require real test-tenant credentials and are not performed by deterministic CI:
 
 1. Before sign-in, open `/api/session` and verify `isAuthenticated` is false. Confirm `/api/protected` returns 401 without an OIDC redirect.
-2. Sign in as an assigned `Employee`. Verify the session shows only `Employee` and `assistant.use`, and `/api/protected` returns 200 with chat disabled.
+2. Sign in as an assigned `Employee`. Verify the session shows only `Employee` and `assistant.use`, and `/api/protected` returns 200 with chat enabled.
 3. Repeat with `HR` and `TechnicalAdmin` users. Verify each session shows only its mapped permission and `/api/protected` returns 403. A user with multiple explicitly assigned roles receives the union of their permissions, not inheritance.
 4. Verify an unassigned user cannot establish an application session. If possible, attempt a user from another tenant; the single-tenant authority/issuer validation must reject it. Wrong-audience validation is covered by a local signed-JWT test, not a live Entra check.
 5. Attempt login with absolute, protocol-relative, backslash and encoded return URLs. Verify navigation remains on the application. Confirm an anonymous cross-site POST cannot log out; the UI logout uses a same-origin POST form with its CSRF token.

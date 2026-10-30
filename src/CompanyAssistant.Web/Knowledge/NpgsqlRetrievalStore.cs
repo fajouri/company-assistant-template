@@ -28,6 +28,13 @@ internal sealed class NpgsqlRetrievalStore : IRetrievalStore, IAsyncDisposable
         "AND d.effective_date <= CURRENT_DATE " +
         "AND d.access_policy = ANY($2)";
 
+    internal const string AuthorizedChunksSql =
+        "SELECT dc.chunk_id, dc.document_id, d.title, d.version, dc.chunk_index, dc.section_heading, dc.content " +
+        "FROM document_chunks dc JOIN documents d ON d.document_id = dc.document_id " +
+        "WHERE dc.chunk_id = ANY($1) AND d.deleted_at IS NULL " +
+        "AND d.approval_state = 'approved' AND d.effective_date <= CURRENT_DATE " +
+        "AND d.access_policy = ANY($2)";
+
     private readonly Lazy<NpgsqlDataSource> _dataSource;
     private readonly string _role;
 
@@ -117,6 +124,30 @@ internal sealed class NpgsqlRetrievalStore : IRetrievalStore, IAsyncDisposable
 
         await transaction.CommitAsync(ct);
         return document;
+    }
+
+    public async Task<IReadOnlyList<RetrievedChunk>> GetAuthorizedChunksAsync(
+        IReadOnlyCollection<long> chunkIds,
+        IReadOnlyCollection<string> allowedPolicies,
+        CancellationToken ct)
+    {
+        if (chunkIds.Count == 0) return [];
+        await using var connection = await _dataSource.Value.OpenConnectionAsync(ct);
+        await using var transaction = await connection.BeginTransactionAsync(ct);
+        await SetRoleAsync(connection, transaction, _role, ct);
+        await using var command = new NpgsqlCommand(AuthorizedChunksSql, connection, transaction);
+        command.Parameters.AddWithValue(chunkIds.ToArray());
+        command.Parameters.AddWithValue(allowedPolicies.ToArray());
+        var results = new List<RetrievedChunk>();
+        {
+            await using var reader = await command.ExecuteReaderAsync(ct);
+            while (await reader.ReadAsync(ct))
+                results.Add(new RetrievedChunk(reader.GetInt64(0), reader.GetString(1), reader.GetString(2),
+                    reader.GetString(3), reader.GetInt32(4), reader.IsDBNull(5) ? null : reader.GetString(5),
+                    reader.GetString(6), 0));
+        }
+        await transaction.CommitAsync(ct);
+        return results;
     }
 
     private static async Task SetRoleAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, string role, CancellationToken ct)

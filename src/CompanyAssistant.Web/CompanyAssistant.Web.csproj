@@ -11,6 +11,11 @@
     <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.14" />
     <PackageReference Include="Npgsql" Version="10.0.3" />
     <PackageReference Include="Pgvector" Version="0.3.2" />
+    <!-- Semantic Kernel core abstractions (ChatHistory, IChatCompletionService, streaming
+         contents). The chat transport is implemented directly against the configurable
+         Foundry/Azure-OpenAI-compatible endpoint so no beta Azure.AI.OpenAI dependency is
+         pulled in; see FoundryChatCompletionService. -->
+    <PackageReference Include="Microsoft.SemanticKernel.Core" Version="1.81.0" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="Knowledge\Migrations\*.sql"
