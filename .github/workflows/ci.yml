@@ -37,5 +37,11 @@ jobs:
           curl --fail http://localhost:8080/api/branding
           curl --fail http://localhost:8080/ | grep 'id="root"'
           docker compose exec -T db psql -U assistant -d assistant -c "SELECT extname FROM pg_extension WHERE extname = 'vector';"
+      - name: Apply and verify database migrations
+        run: |
+          docker compose exec -T web dotnet CompanyAssistant.Web.dll migrate
+          docker compose exec -T db psql -U assistant -d assistant -c "SELECT count(*) AS applied_migrations FROM __schema_migrations;"
+          docker compose exec -T db psql -U assistant -d assistant -c "SELECT rolname FROM pg_roles WHERE rolname IN ('assistant_ingest','assistant_runtime') ORDER BY rolname;"
+          docker compose exec -T db psql -U assistant -d assistant -c "SELECT to_regclass('public.documents') AS documents, to_regclass('public.document_chunks') AS chunks;"
       - if: always()
         run: docker compose down

@@ -9,6 +9,12 @@
     <PackageReference Include="Microsoft.Identity.Web" Version="4.16.1" />
     <!-- Pin the patched transitive release; 10.0.10 has known vulnerabilities. -->
     <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.14" />
+    <PackageReference Include="Npgsql" Version="10.0.3" />
+    <PackageReference Include="Pgvector" Version="0.3.2" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Knowledge\Migrations\*.sql"
+                      LogicalName="Knowledge.Migrations.%(Filename)%(Extension)" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="CompanyAssistant.Web.Tests" />

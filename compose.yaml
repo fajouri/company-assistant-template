@@ -8,6 +8,12 @@ services:
       AzureAd__ClientId: ${ENTRA_CLIENT_ID:?Set ENTRA_CLIENT_ID in .env}
       AzureAd__ClientSecret: ${ENTRA_CLIENT_SECRET:?Set ENTRA_CLIENT_SECRET in .env}
       DataProtection__KeyPath: /tmp/company-assistant-keys
+      Database__RuntimeConnectionString: Host=db;Database=assistant;Username=assistant;Password=${POSTGRES_PASSWORD}
+      Database__IngestionConnectionString: Host=db;Database=assistant;Username=assistant;Password=${POSTGRES_PASSWORD}
+      Database__MigrationConnectionString: Host=db;Database=assistant;Username=assistant;Password=${POSTGRES_PASSWORD}
+      Ingestion__SourcePath: /data/policies
+    volumes:
+      - ./fixtures/policies:/data/policies:ro
     read_only: true
     tmpfs:
       - /tmp

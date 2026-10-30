@@ -1,0 +1,138 @@
+using System.Text;
+using CompanyAssistant.Web.Knowledge;
+
+namespace CompanyAssistant.Web.Tests;
+
+public sealed class IngestionServiceTests
+{
+    private static IngestionService CreateService(
+        FakeIngestionStore store,
+        FakeEmbeddingClient embeddings,
+        string sourcePath) =>
+        new(store, embeddings, new IngestionOptions(sourcePath, 1_048_576, 6000));
+
+    [Fact]
+    public async Task Repeated_ingestion_is_idempotent()
+    {
+        using var temp = new TempDirectory();
+        File.WriteAllText(Path.Combine(temp.Path, "a.md"), MarkdownFixtures.Policy("a"));
+        File.WriteAllText(Path.Combine(temp.Path, "b.md"), MarkdownFixtures.Policy("b"));
+
+        var store = new FakeIngestionStore();
+        var embeddings = new FakeEmbeddingClient();
+        var service = CreateService(store, embeddings, temp.Path);
+
+        var first = await service.RunAsync(CancellationToken.None);
+        var second = await service.RunAsync(CancellationToken.None);
+
+        Assert.Equal(2, first.Indexed);
+        Assert.Equal(0, first.Unchanged);
+        Assert.Equal(2, second.Unchanged);
+        Assert.Equal(0, second.Indexed);
+        Assert.Empty(store.Upserts.Skip(2));
+        Assert.Equal(2, store.Upserts.Count);
+    }
+
+    [Fact]
+    public async Task Changed_document_is_reindexed_without_duplicates()
+    {
+        using var temp = new TempDirectory();
+        var path = Path.Combine(temp.Path, "a.md");
+        File.WriteAllText(path, MarkdownFixtures.Policy("a"));
+
+        var store = new FakeIngestionStore();
+        var service = CreateService(store, new FakeEmbeddingClient(), temp.Path);
+        await service.RunAsync(CancellationToken.None);
+        var originalHash = store.Documents["a"].ContentSha256;
+
+        File.WriteAllText(path, MarkdownFixtures.Policy("a", body: "# Changed\n\nNew content.\n"));
+        await service.RunAsync(CancellationToken.None);
+
+        Assert.Equal(2, store.Upserts.Count);
+        Assert.Single(store.Documents);
+        Assert.NotEqual(originalHash, store.Documents["a"].ContentSha256);
+    }
+
+    [Fact]
+    public async Task Removed_document_is_soft_deleted()
+    {
+        using var temp = new TempDirectory();
+        var path = Path.Combine(temp.Path, "a.md");
+        File.WriteAllText(path, MarkdownFixtures.Policy("a"));
+
+        var store = new FakeIngestionStore();
+        var service = CreateService(store, new FakeEmbeddingClient(), temp.Path);
+        await service.RunAsync(CancellationToken.None);
+        Assert.Null(store.Documents["a"].DeletedAt);
+
+        File.Delete(path);
+        var report = await service.RunAsync(CancellationToken.None);
+
+        Assert.Equal(1, report.Deleted);
+        Assert.NotNull(store.Documents["a"].DeletedAt);
+    }
+
+    [Fact]
+    public async Task Revoked_document_is_reindexed_as_revoked()
+    {
+        using var temp = new TempDirectory();
+        var path = Path.Combine(temp.Path, "a.md");
+        File.WriteAllText(path, MarkdownFixtures.Policy("a"));
+
+        var store = new FakeIngestionStore();
+        var service = CreateService(store, new FakeEmbeddingClient(), temp.Path);
+        await service.RunAsync(CancellationToken.None);
+
+        File.WriteAllText(path, MarkdownFixtures.Policy("a", approvalState: "revoked"));
+        await service.RunAsync(CancellationToken.None);
+
+        Assert.Equal(ApprovalStates.Revoked, store.Documents["a"].ApprovalState);
+    }
+
+    [Fact]
+    public async Task Future_effective_document_is_stored_but_marked_future()
+    {
+        using var temp = new TempDirectory();
+        File.WriteAllText(Path.Combine(temp.Path, "a.md"),
+            MarkdownFixtures.Policy("a", effectiveDate: "2999-01-01"));
+
+        var store = new FakeIngestionStore();
+        var service = CreateService(store, new FakeEmbeddingClient(), temp.Path);
+        await service.RunAsync(CancellationToken.None);
+
+        Assert.Equal(new DateOnly(2999, 1, 1), store.Documents["a"].EffectiveDate);
+    }
+
+    [Fact]
+    public async Task Embedding_failure_does_not_partially_write_the_failed_document()
+    {
+        using var temp = new TempDirectory();
+        File.WriteAllText(Path.Combine(temp.Path, "a.md"), MarkdownFixtures.Policy("a", body: "# One\n\nAlpha body.\n"));
+        File.WriteAllText(Path.Combine(temp.Path, "b.md"), MarkdownFixtures.Policy("b", body: "# Two\n\nBeta body.\n"));
+
+        var store = new FakeIngestionStore();
+        var embeddings = new FakeEmbeddingClient();
+        embeddings.FailOnTexts.Add("Beta");
+        var service = CreateService(store, embeddings, temp.Path);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.RunAsync(CancellationToken.None));
+
+        Assert.DoesNotContain(store.Upserts, upsert => upsert.Metadata.DocumentId == "b");
+        Assert.Empty(store.SoftDeleteCalls);
+    }
+
+    [Fact]
+    public async Task Oversized_file_is_skipped_and_not_deleted()
+    {
+        using var temp = new TempDirectory();
+        File.WriteAllText(Path.Combine(temp.Path, "a.md"), new string('x', 200));
+
+        var store = new FakeIngestionStore();
+        var service = new IngestionService(store, new FakeEmbeddingClient(), new IngestionOptions(temp.Path, 100, 6000));
+        var report = await service.RunAsync(CancellationToken.None);
+
+        Assert.Equal(1, report.Oversized);
+        Assert.Empty(store.Upserts);
+        Assert.Equal(0, report.Deleted);
+    }
+}

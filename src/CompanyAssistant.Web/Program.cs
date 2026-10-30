@@ -1,8 +1,15 @@
 using CompanyAssistant.Web.Identity;
+using CompanyAssistant.Web.Knowledge;
+
+if (args.Length > 0 && args[0] is "migrate" or "ingest")
+{
+    return await DatabaseCommand.RunAsync(args[0], args.Skip(1).ToArray());
+}
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddHealthChecks();
 builder.AddEntraIdentity();
+builder.AddKnowledge();
 
 var app = builder.Build();
 app.UseForwardedHeaders();
@@ -28,6 +35,8 @@ app.MapGet("/api/branding", (IConfiguration config) => new
     defaultLanguage = config["Branding:DefaultLanguage"] == "en" ? "en" : "es"
 });
 app.MapIdentityEndpoints();
+app.MapKnowledgeEndpoints();
 app.Run();
+return 0;
 
 public partial class Program;
