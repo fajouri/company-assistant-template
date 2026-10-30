@@ -144,5 +144,25 @@ public sealed class ChatServiceTests
         Assert.DoesNotContain("chat.invalid", exception.Message, StringComparison.Ordinal);
         Assert.DoesNotContain("fictional-test-key", exception.Message, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public async Task Cancellation_is_propagated_to_the_caller()
+    {
+        var store = new FakeRetrievalStore();
+        store.Chunks.Add((FakeRetrievalStore.ChunkFor("leave", "Leave policy", "Leave body", AccessPolicies.Employee), AccessPolicies.Employee));
+        var completion = new FakeChatCompletionService { Deltas = { "answer" } };
+        var service = CreateService(store, new FakeEmbeddingClient(), completion);
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+        {
+            await foreach (var _ in service.AnswerAsync("leave?", new RetrievalCaller([AppPermissions.AssistantUse]), [], cts.Token))
+            {
+            }
+        });
+    }
 }
+
 
