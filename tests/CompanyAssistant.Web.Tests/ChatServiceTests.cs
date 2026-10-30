@@ -6,9 +6,9 @@ namespace CompanyAssistant.Web.Tests;
 
 public sealed class ChatServiceTests
 {
-    private static ChatSettings Settings(int maxContextChunks = 4) => new(
+    private static ChatSettings Settings(int maxContextChunks = 4, int maxContextChars = 8_000) => new(
         "https://chat.invalid", "key", "gpt-test", "2024-02-01",
-        maxContextChunks, 8_000, 4, 2_000, 512, 30, 10);
+        maxContextChunks, maxContextChars, 4, 2_000, 512, 30, 10);
 
     private static ChatService CreateService(
         FakeRetrievalStore store,

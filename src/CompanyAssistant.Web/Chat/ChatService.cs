@@ -44,23 +44,26 @@ internal sealed class ChatService(
             .Where(chunk => double.IsFinite(chunk.Distance) && chunk.Distance <= settings.MaxEvidenceDistance)
             .ToList();
 
-        var citations = chunks
-            .Select((chunk, index) => new ChatCitation(
-                index + 1,
-                chunk.ChunkId,
-                chunk.DocumentId,
-                chunk.Title,
-                chunk.Version))
-            .ToList();
-
-        if (chunks.Count == 0)
+        // MaxContextChars is an accumulated budget over the retrieved-passage section. Only the
+        // chunks that fit (title, ids, version, separators and content) are numbered and sent to
+        // the model; omitted chunks cannot be cited.
+        var passages = SelectPassagesWithinBudget(chunks, settings.MaxContextChars);
+        if (passages.Count == 0)
         {
             yield return new SourcesEvent([]);
             yield return new DoneEvent(Limited: true, []);
             yield break;
         }
 
-        var chatHistory = BuildHistory(message, chunks, safeHistory);
+        var citations = passages.Select((passage, index) => new ChatCitation(
+            index + 1,
+            passage.Chunk.ChunkId,
+            passage.Chunk.DocumentId,
+            passage.Chunk.Title,
+            passage.Chunk.Version))
+            .ToList();
+
+        var chatHistory = BuildHistory(message, passages, safeHistory);
         var maxOutputChars = settings.MaxOutputTokens * 4;
         var answer = new StringBuilder();
 
@@ -91,8 +94,8 @@ internal sealed class ChatService(
         var cited = citations.Where(citation => used.Contains(citation.Index)).ToList();
         yield return new SourcesEvent(cited);
         yield return new DoneEvent(Limited: false, cited,
-            chunks.Select(chunk => new SourceStamp(chunk.ChunkId, chunk.DocumentId, chunk.Title, chunk.Version,
-                    Hashing.Sha256Hex(chunk.Content)))
+            passages.Select(passage => new SourceStamp(passage.Chunk.ChunkId, passage.Chunk.DocumentId, passage.Chunk.Title, passage.Chunk.Version,
+                    Hashing.Sha256Hex(passage.Chunk.Content)))
                 .Concat(safeHistory.Where(turn => turn.Role == "assistant").SelectMany(turn => turn.Sources!))
                 .Distinct().ToArray());
     }
@@ -134,7 +137,7 @@ internal sealed class ChatService(
 
     private ChatHistory BuildHistory(
         string message,
-        IReadOnlyList<RetrievedChunk> chunks,
+        IReadOnlyList<(RetrievedChunk Chunk, string Content)> passages,
         IReadOnlyList<ConversationTurn> history)
     {
         var chatHistory = new ChatHistory();
@@ -146,23 +149,60 @@ internal sealed class ChatService(
             chatHistory.Add(new ChatMessageContent(role, turn.Text));
         }
 
-        var perChunkChars = Math.Max(500, settings.MaxContextChars / settings.MaxContextChunks);
-        var passages = new StringBuilder();
-        for (var i = 0; i < chunks.Count; i++)
+        // The passage section is already bounded by the accumulated MaxContextChars budget
+        // computed in SelectPassagesWithinBudget: titles, ids, versions, separators and content
+        // were counted when the passages were selected. Chunks are numbered 1..n in relevance
+        // order, exactly matching the citation numbers sent to the model.
+        var passageSection = new StringBuilder();
+        for (var i = 0; i < passages.Count; i++)
         {
-            var chunk = chunks[i];
-            passages.Append('[').Append(i + 1).Append("] ")
+            var (chunk, content) = passages[i];
+            passageSection.Append('[').Append(i + 1).Append("] ")
                 .Append(chunk.Title)
                 .Append(" (document: ").Append(chunk.DocumentId)
                 .Append(", version: ").Append(chunk.Version).Append(")\n")
-                .Append(Truncate(chunk.Content, perChunkChars))
+                .Append(content)
                 .Append('\n');
         }
 
         chatHistory.AddUserMessage(
-            "Reference passages:\n" + passages + "\nQuestion: " + message);
+            "Reference passages:\n" + passageSection + "\nQuestion: " + message);
 
         return chatHistory;
+    }
+
+    // MaxContextChars bounds the accumulated size of the retrieved-passage section placed in the
+    // user message between the "Reference passages:" header and the "Question:" line. Each
+    // included chunk contributes one block:
+    //
+    //   [n] {title} (document: {id}, version: {v})\n{content}\n
+    //
+    // The budget counts, per included chunk, the citation number, brackets, title, document id,
+    // version, fixed separators and the chunk content. It does not count the system prompt, prior
+    // conversation turns, the "Reference passages:"/"Question:" wrappers or the user question.
+    // Chunks are considered in retrieval (relevance) order. A chunk is kept only if its header
+    // and at least one content character fit in the remaining budget; its content is truncated to
+    // the budget. Once a chunk does not fit, the remaining (less relevant) chunks are omitted.
+    private static IReadOnlyList<(RetrievedChunk Chunk, string Content)> SelectPassagesWithinBudget(
+        IReadOnlyList<RetrievedChunk> chunks, int maxContextChars)
+    {
+        var passages = new List<(RetrievedChunk, string)>();
+        var remaining = maxContextChars;
+        foreach (var chunk in chunks)
+        {
+            var index = passages.Count + 1;
+            var header = $"[{index}] {chunk.Title} (document: {chunk.DocumentId}, version: {chunk.Version})\n";
+            // Header plus at least one content character plus the trailing separator.
+            if (header.Length + 2 > remaining)
+                break;
+            var contentBudget = remaining - header.Length - 1;
+            var content = Truncate(chunk.Content, contentBudget);
+            if (content.Length == 0)
+                break;
+            passages.Add((chunk, content));
+            remaining -= header.Length + content.Length + 1;
+        }
+        return passages;
     }
 
     private static string Truncate(string text, int maxChars) =>
