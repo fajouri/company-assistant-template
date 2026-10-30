@@ -180,9 +180,15 @@ internal sealed class ChatService(
     // The budget counts, per included chunk, the citation number, brackets, title, document id,
     // version, fixed separators and the chunk content. It does not count the system prompt, prior
     // conversation turns, the "Reference passages:"/"Question:" wrappers or the user question.
-    // Chunks are considered in retrieval (relevance) order. A chunk is kept only if its header
-    // and at least one content character fit in the remaining budget; its content is truncated to
-    // the budget. Once a chunk does not fit, the remaining (less relevant) chunks are omitted.
+    // Chunks are considered in retrieval (relevance) order. A chunk is kept only if its complete
+    // header and complete content fit in the remaining budget; content is never truncated. Once a
+    // chunk does not fit, selection stops and the remaining (less relevant) chunks are omitted. If
+    // no complete chunk fits, the caller returns a limited response without calling the chat model.
+    //
+    // Trade-off: oversized chunks can omit relevant evidence entirely. Operators can adjust the
+    // ingestion chunk size or increase Chat__MaxContextChars. Citation-number validation only
+    // checks that [n] refers to a passage that was actually sent; it does not prove that each
+    // factual claim is semantically supported by its cited passage.
     private static IReadOnlyList<(RetrievedChunk Chunk, string Content)> SelectPassagesWithinBudget(
         IReadOnlyList<RetrievedChunk> chunks, int maxContextChars)
     {
@@ -192,19 +198,12 @@ internal sealed class ChatService(
         {
             var index = passages.Count + 1;
             var header = $"[{index}] {chunk.Title} (document: {chunk.DocumentId}, version: {chunk.Version})\n";
-            // Header plus at least one content character plus the trailing separator.
-            if (header.Length + 2 > remaining)
+            var block = header.Length + chunk.Content.Length + 1;
+            if (block > remaining)
                 break;
-            var contentBudget = remaining - header.Length - 1;
-            var content = Truncate(chunk.Content, contentBudget);
-            if (content.Length == 0)
-                break;
-            passages.Add((chunk, content));
-            remaining -= header.Length + content.Length + 1;
+            passages.Add((chunk, chunk.Content));
+            remaining -= block;
         }
         return passages;
     }
-
-    private static string Truncate(string text, int maxChars) =>
-        text.Length <= maxChars ? text : text[..maxChars];
 }

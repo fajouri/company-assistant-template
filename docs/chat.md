@@ -71,7 +71,7 @@ confirm the selected choice. The request does not enable tools.
 | `Chat__Deployment` | – | Chat model deployment name, e.g. `gpt-4o-mini`. |
 | `Chat__ApiVersion` | `2024-02-01` | Provider API version. |
 | `Chat__MaxContextChunks` | `4` | Retrieved chunks included in the prompt. |
-| `Chat__MaxContextChars` | `8000` | Accumulated character budget for the retrieved-passage section placed in the model prompt between `Reference passages:` and `Question:`. It counts, per included chunk, the citation number, brackets, title, document id, version, fixed separators and the chunk content. Chunks are kept in relevance order until the budget is exhausted; chunks that do not fit are omitted, and their content is truncated to the remaining budget. The system prompt, prior conversation turns, the `Reference passages:`/`Question:` wrappers and the user question are not counted. |
+| `Chat__MaxContextChars` | `8000` | Accumulated character budget for the retrieved-passage section placed in the model prompt between `Reference passages:` and `Question:`. It counts, per included chunk, the citation number, brackets, title, document id, version, fixed separators and the chunk content. Chunks are kept in relevance order; a chunk is included only if its complete header and complete content fit in the remaining budget, and content is never truncated. Once a chunk does not fit, selection stops and later chunks are omitted. The system prompt, prior conversation turns, the `Reference passages:`/`Question:` wrappers and the user question are not counted. |
 | `Chat__MaxHistoryTurns` | `4` | Prior question/answer turns included from the conversation. |
 | `Chat__MaxQueryLength` | `2000` | Maximum question length. |
 | `Chat__MaxOutputTokens` | `512` | `max_tokens` sent to the model and the streamed character bound. |
@@ -85,6 +85,22 @@ is rejected at startup. Unset chat configuration keeps the anonymous shell runna
 
 Compose forwards `CHAT__ENDPOINT`, `CHAT__API_KEY` and `CHAT__DEPLOYMENT` from `.env` to
 `Chat__Endpoint`, `Chat__ApiKey` and `Chat__Deployment`, exactly as it does for embeddings.
+
+## Passage selection and the context budget
+
+Retrieved chunks are considered in relevance order and a chunk is added to the prompt only if
+its complete header (citation number, title, document id and version) and complete content fit
+in the remaining `Chat__MaxContextChars` budget. Chunk content is never truncated: if the next
+chunk does not fit, selection stops and no lower-ranked chunk is selected in its place. If no
+complete chunk fits, the answer is limited and the chat model is not called. Citation numbers
+refer only to chunks actually included, and included chunks are recorded as source stamps and
+revalidated on reuse.
+
+This complete-chunk policy can omit relevant evidence when chunks are large relative to the
+budget. Operators can adjust the ingestion chunk size or increase `Chat__MaxContextChars` to
+include more passages. Citation-number validation confirms that a `[n]` marker refers to a
+passage sent to the model; it does not prove that each factual claim is semantically supported
+by its cited passage.
 
 ## Grounding and citations
 

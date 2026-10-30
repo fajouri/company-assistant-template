@@ -337,7 +337,9 @@ public sealed class ChatServiceTests
     {
         var settings = Settings(maxContextChunks: 20, maxContextChars: 1_000);
         var store = new FakeRetrievalStore();
-        store.Chunks.Add((FakeRetrievalStore.ChunkFor("doc-1", "Policy one", new string('A', 2000), AccessPolicies.Employee), AccessPolicies.Employee));
+        // [1] Policy one (document: doc-1, version: 1.0)\n is 47 chars; 952 content chars plus
+        // the trailing separator complete the 1_000-char budget exactly. No truncation.
+        store.Chunks.Add((FakeRetrievalStore.ChunkFor("doc-1", "Policy one", new string('A', 952), AccessPolicies.Employee), AccessPolicies.Employee));
         store.Chunks.Add((FakeRetrievalStore.ChunkFor("doc-2", "Policy two", new string('B', 2000), AccessPolicies.Employee), AccessPolicies.Employee));
         store.Chunks.Add((FakeRetrievalStore.ChunkFor("doc-3", "Policy three", new string('C', 2000), AccessPolicies.Employee), AccessPolicies.Employee));
         var completion = new FakeChatCompletionService { Deltas = { "Answer [1]." } };
@@ -348,6 +350,7 @@ public sealed class ChatServiceTests
         var done = Assert.IsType<DoneEvent>(events[^1]);
         Assert.False(done.Limited);
         Assert.Single(done.Citations);
+        Assert.Equal(1, done.Citations[0].Index);
         Assert.Equal("doc-1", done.Citations[0].DocumentId);
 
         var prompt = completion.LastHistory!
@@ -355,7 +358,8 @@ public sealed class ChatServiceTests
             .OfType<string>()
             .First(content => content.Contains("Reference passages"));
         var section = PassagesSection(prompt);
-        Assert.InRange(section.Length, 1, settings.MaxContextChars);
+        // The complete passage section, headers and separators included, never exceeds the budget.
+        Assert.Equal(settings.MaxContextChars, section.Length);
         Assert.Contains("Policy one", section);
         Assert.DoesNotContain("Policy two", section);
         Assert.DoesNotContain("Policy three", section);
@@ -369,8 +373,11 @@ public sealed class ChatServiceTests
         var longTitle = new string('T', 200);
         var longDocumentId = new string('D', 200);
         var longVersion = new string('V', 200);
+        // Header: 4 + 200 + 12 + 200 + 11 + 200 + 2 = 629; 370 content chars plus the trailing
+        // separator complete the 1_000-char budget exactly. With 2_000 content chars the chunk
+        // would not fit at all and would be omitted instead of truncated.
         store.Chunks.Add((
-            new RetrievedChunk(1, longDocumentId, longTitle, longVersion, 0, null, new string('A', 2000), 0.1),
+            new RetrievedChunk(1, longDocumentId, longTitle, longVersion, 0, null, new string('A', 370), 0.1),
             AccessPolicies.Employee));
         var completion = new FakeChatCompletionService { Deltas = { "Answer [1]." } };
         var service = CreateService(store, new FakeEmbeddingClient(), completion, settings);
@@ -385,7 +392,7 @@ public sealed class ChatServiceTests
             .OfType<string>()
             .First(content => content.Contains("Reference passages"));
         var section = PassagesSection(prompt);
-        Assert.True(section.Length <= settings.MaxContextChars);
+        Assert.Equal(settings.MaxContextChars, section.Length);
         Assert.Contains(longTitle, section);
         Assert.Contains(longDocumentId, section);
         Assert.Contains(longVersion, section);
@@ -396,7 +403,9 @@ public sealed class ChatServiceTests
     {
         var settings = Settings(maxContextChunks: 20, maxContextChars: 1_000);
         var store = new FakeRetrievalStore();
-        store.Chunks.Add((FakeRetrievalStore.ChunkFor("doc-1", "Included", new string('A', 950), AccessPolicies.Employee), AccessPolicies.Employee));
+        // [1] Included (document: doc-1, version: 1.0)\n is 45 chars; 900 content chars plus the
+        // trailing separator fit the budget. doc-2 does not fit afterwards and is omitted.
+        store.Chunks.Add((FakeRetrievalStore.ChunkFor("doc-1", "Included", new string('A', 900), AccessPolicies.Employee), AccessPolicies.Employee));
         store.Chunks.Add((FakeRetrievalStore.ChunkFor("doc-2", "Omitted", new string('B', 2000), AccessPolicies.Employee), AccessPolicies.Employee));
         // The model cites the omitted chunk [2], which was never sent to the model.
         var completion = new FakeChatCompletionService { Deltas = { "See [2]." } };
@@ -485,6 +494,58 @@ public sealed class ChatServiceTests
         Assert.False(done2.Limited);
         Assert.Contains(done2.Sources!, source => source.DocumentId == "doc-1");
         Assert.DoesNotContain(done2.Sources!, source => source.DocumentId == "doc-2");
+    }
+
+    [Fact]
+    public async Task Partial_chunk_is_omitted_even_if_header_and_one_char_fit()
+    {
+        // Budget 100: the 47-char header plus one content character fits, but the complete
+        // 60-char content does not (47 + 60 + 1 = 108 > 100). Under the complete-chunk policy
+        // the chunk is omitted, so no passage is sent and the chat model is never called.
+        var settings = Settings(maxContextChunks: 20, maxContextChars: 100);
+        var store = new FakeRetrievalStore();
+        store.Chunks.Add((FakeRetrievalStore.ChunkFor("doc-1", "Policy one", new string('A', 60), AccessPolicies.Employee), AccessPolicies.Employee));
+        var completion = new FakeChatCompletionService { Deltas = { "should not run" } };
+        var service = CreateService(store, new FakeEmbeddingClient(), completion, settings);
+
+        var events = await RunAsync(service, "Q", [AppPermissions.AssistantUse]);
+
+        Assert.Equal(0, completion.StreamingCallCount);
+        var done = Assert.IsType<DoneEvent>(events[^1]);
+        Assert.True(done.Limited);
+        Assert.Empty(done.Citations);
+    }
+
+    [Fact]
+    public async Task Selection_stops_at_first_non_fitting_chunk_and_does_not_skip_ahead()
+    {
+        var settings = Settings(maxContextChunks: 20, maxContextChars: 1_000);
+        var store = new FakeRetrievalStore();
+        // doc-1 fits (42 + 100 + 1 = 143). doc-2 does not fit the remaining budget, so doc-3
+        // is not selected even though it would fit.
+        store.Chunks.Add((FakeRetrievalStore.ChunkFor("doc-1", "First", new string('A', 100), AccessPolicies.Employee), AccessPolicies.Employee));
+        store.Chunks.Add((FakeRetrievalStore.ChunkFor("doc-2", "Second", new string('B', 2000), AccessPolicies.Employee), AccessPolicies.Employee));
+        store.Chunks.Add((FakeRetrievalStore.ChunkFor("doc-3", "Third", new string('C', 50), AccessPolicies.Employee), AccessPolicies.Employee));
+        var completion = new FakeChatCompletionService { Deltas = { "Per [1]." } };
+        var service = CreateService(store, new FakeEmbeddingClient(), completion, settings);
+
+        var events = await RunAsync(service, "Q", [AppPermissions.AssistantUse]);
+
+        var done = Assert.IsType<DoneEvent>(events[^1]);
+        Assert.False(done.Limited);
+        Assert.Single(done.Citations);
+        Assert.Equal(1, done.Citations[0].Index);
+        Assert.Equal("doc-1", done.Citations[0].DocumentId);
+
+        var prompt = completion.LastHistory!
+            .Select(message => message.Content)
+            .OfType<string>()
+            .First(content => content.Contains("Reference passages"));
+        var section = PassagesSection(prompt);
+        Assert.True(section.Length <= settings.MaxContextChars);
+        Assert.Contains("First", section);
+        Assert.DoesNotContain("Second", section);
+        Assert.DoesNotContain("Third", section);
     }
 }
 
