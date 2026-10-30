@@ -77,4 +77,3 @@ public sealed class PostgresDatabaseFixture : IAsyncLifetime
 
     internal NpgsqlIngestionStore CreateIngestionStore() => new(DatabaseSettings);
 }
-
