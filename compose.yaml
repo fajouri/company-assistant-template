@@ -12,6 +12,9 @@ services:
       Database__IngestionConnectionString: Host=db;Database=assistant;Username=assistant;Password=${POSTGRES_PASSWORD}
       Database__MigrationConnectionString: Host=db;Database=assistant;Username=assistant;Password=${POSTGRES_PASSWORD}
       Ingestion__SourcePath: /data/policies
+      Embeddings__Endpoint: ${EMBEDDINGS__ENDPOINT:-}
+      Embeddings__ApiKey: ${EMBEDDINGS__API_KEY:-}
+      Embeddings__Deployment: ${EMBEDDINGS__DEPLOYMENT:-}
     volumes:
       - ./fixtures/policies:/data/policies:ro
     read_only: true

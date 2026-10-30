@@ -48,6 +48,8 @@ docker compose exec -T web dotnet CompanyAssistant.Web.dll ingest
 
 The current schema stores `vector(1536)`; changing the dimension requires a new versioned migration. When embeddings are not configured, `ingest` fails closed and `/api/search` returns 503. No mock is ever enabled in production.
 
+Compose forwards `EMBEDDINGS__ENDPOINT`, `EMBEDDINGS__API_KEY` and `EMBEDDINGS__DEPLOYMENT` from `.env` to `Embeddings__Endpoint`, `Embeddings__ApiKey` and `Embeddings__Deployment`. They are optional: leave them unset to run the anonymous shell, or set all three to enable the real client; a partial configuration is rejected at startup. `Embeddings__ApiVersion` and `Embeddings__Dimensions` keep their defaults and can be overridden directly in the deployment environment when required.
+
 ## Retrieval API
 
 | Endpoint | Access |
