@@ -7,6 +7,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       POSTGRES_PASSWORD: ci-fictional-database-password
+      ENTRA_TENANT_ID: 11111111-1111-1111-1111-111111111111
+      ENTRA_CLIENT_ID: 33333333-3333-3333-3333-333333333333
+      ENTRA_CLIENT_SECRET: ci-fictional-configuration-not-a-real-secret
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -20,6 +23,7 @@ jobs:
       - run: npm run build
         working-directory: frontend
       - run: dotnet build src/CompanyAssistant.Web -c Release
+      - run: dotnet test tests/CompanyAssistant.Web.Tests -c Release
       - name: Verify branding logo validation and static assets
         run: python3 tests/branding_logo_test.py
       - name: Build and smoke test containers

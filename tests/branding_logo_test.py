@@ -29,7 +29,14 @@ class BrandingLogoTests(unittest.TestCase):
             env = {key: value for key, value in os.environ.items()
                    if not key.lower().startswith(("branding__", "aspnetcore_", "dotnet_"))}
             env.update(ASPNETCORE_URLS=address, ASPNETCORE_CONTENTROOT=directory,
-                       Branding__DefaultLanguage=language)
+                       Branding__DefaultLanguage=language,
+                       AzureAd__Instance="https://login.microsoftonline.com/",
+                       AzureAd__CallbackPath="/signin-oidc",
+                       AzureAd__SignedOutCallbackPath="/signout-oidc",
+                       AzureAd__TenantId="11111111-1111-1111-1111-111111111111",
+                       AzureAd__ClientId="33333333-3333-3333-3333-333333333333",
+                       AzureAd__ClientSecret="fictional-test-configuration-not-a-real-secret",
+                       DataProtection__KeyPath=str(root / "keys"))
             if configured is not None:
                 (root / "appsettings.json").write_text(
                     json.dumps({"Branding": {"LogoUrl": configured}}), encoding="utf-8")
