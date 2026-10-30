@@ -34,8 +34,8 @@ internal sealed class ChatService(
         [EnumeratorCancellation] CancellationToken ct)
     {
         var safeHistory = await ValidateHistoryAsync(history, caller, ct);
-        // A short follow-up can carry the last verified question into retrieval without
-        // sending prior answers or adding another model call.
+        // A short follow-up can carry the last revalidated question into retrieval.
+        // Prior answers remain in the model history with their transitive dependencies.
         var searchText = IsFollowUp(message) && safeHistory.Count >= 2
             ? safeHistory[^2].Text + "\n" + message
             : message;
@@ -71,10 +71,13 @@ internal sealed class ChatService(
                 throw new ChatUnavailableException("Chat output exceeded its configured bound.");
 
             answer.Append(text);
+            if (text.Length > 0)
+                yield return new DeltaEvent(text);
         }
 
         // Validate the complete model output, including references split across deltas.
-        // Withhold it until provider completion so a partial or uncited answer is never shown.
+        // Deltas are provisional. Only this terminal result confirms citation numbers;
+        // it does not establish semantic support for the answer's claims.
         var matches = Regex.Matches(answer.ToString(), @"\[(\d+)\]");
         var used = matches.Select(match => int.TryParse(match.Groups[1].Value, out var index) ? index : -1)
             .Distinct().ToHashSet();
@@ -87,10 +90,11 @@ internal sealed class ChatService(
 
         var cited = citations.Where(citation => used.Contains(citation.Index)).ToList();
         yield return new SourcesEvent(cited);
-        yield return new DeltaEvent(answer.ToString());
         yield return new DoneEvent(Limited: false, cited,
             chunks.Select(chunk => new SourceStamp(chunk.ChunkId, chunk.DocumentId, chunk.Title, chunk.Version,
-                    Hashing.Sha256Hex(chunk.Content))).ToList());
+                    Hashing.Sha256Hex(chunk.Content)))
+                .Concat(safeHistory.Where(turn => turn.Role == "assistant").SelectMany(turn => turn.Sources!))
+                .Distinct().ToArray());
     }
 
     private static bool IsFollowUp(string message) => message.Length <= 80 &&
@@ -101,11 +105,18 @@ internal sealed class ChatService(
         IReadOnlyList<ConversationTurn> history, RetrievalCaller caller, CancellationToken ct)
     {
         var safe = new List<ConversationTurn>();
-        for (var i = 0; i + 1 < history.Count; i += 2)
+        var dependencies = new HashSet<SourceStamp>();
+        // Prefer recent exchanges, but never truncate a dependency set: doing so would
+        // lose its transitive provenance. Omit the whole exchange if it exceeds budget.
+        var first = Math.Max(0, history.Count - settings.MaxHistoryTurns * 2);
+        for (var i = history.Count - 2; i >= first; i -= 2)
         {
             var question = history[i];
             var answer = history[i + 1];
             if (question.Role != "user" || answer.Role != "assistant" || answer.Sources is not { Count: > 0 })
+                continue;
+            if (answer.Sources.Count > settings.MaxHistorySources
+                || dependencies.Union(answer.Sources).Count() > settings.MaxHistorySources - settings.MaxContextChunks)
                 continue;
             var ids = answer.Sources.Select(source => source.ChunkId).Distinct().ToArray();
             var current = await retrieval.GetAuthorizedChunksAsync(ids, caller, ct);
@@ -114,8 +125,8 @@ internal sealed class ChatService(
                 && chunk.Title == source.Title
                 && chunk.Version == source.Version && Hashing.Sha256Hex(chunk.Content) == source.ContentHash)))
             {
-                safe.Add(question);
-                safe.Add(answer);
+                dependencies.UnionWith(answer.Sources);
+                safe.InsertRange(0, [question, answer]);
             }
         }
         return safe;

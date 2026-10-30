@@ -3,7 +3,8 @@
 The assistant answers questions with grounded citations. It uses Semantic Kernel's chat
 abstraction (`Microsoft.SemanticKernel.Core`) over a configurable Foundry/Azure-OpenAI-
 compatible chat deployment. The normal path is deterministic: authorize the caller, retrieve
-their allowed passages, run one bounded model generation, validate references, and return the answer. There are no
+their allowed passages, stream one bounded provisional model generation, and confirm its reference
+numbers only after normal provider completion. There are no
 agents, no planning and no tools.
 
 ## Endpoint
@@ -23,24 +24,43 @@ ACL-filtered chunks.
 
 The response is `application/x-ndjson`, one JSON object per line:
 
-1. `{"type":"sources","citations":[{"index":1,"chunkId":...,"documentId":"leave-policy","title":"...","version":"1.0"}]}`
-2. `{"type":"delta","text":"..."}` (the validated complete answer)
+1. `{"type":"delta","text":"...","provisional":true}` (zero or more incremental fragments)
+2. `{"type":"sources","citations":[{"index":1,"chunkId":...,"documentId":"leave-policy","title":"...","version":"1.0"}]}`
 3. `{"type":"done","conversationId":"...","limited":false,"citations":[...]}`
 
 `sources` and `done.citations` contain only passages referenced by valid `[n]` markers in the
-completed model text, never all retrieval candidates. The service holds the bounded answer
-until the provider's `[DONE]` marker arrives and references can be checked across deltas. This
-delays answer display until completion; the request remains abortable. A response with missing
-or unknown references is limited and contains no answer. Citation-number validation cannot
-prove that each factual claim is semantically supported by its cited passage.
+completed model text, never all retrieval candidates. The backend retains a bounded copy while
+flushing each delta immediately. The client displays deltas as plain text with a persistent,
+accessible “provisional / not yet verified; may contain errors” status. It confirms the answer
+and shows final citations only after a successful `done` and clean NDJSON EOF. The completed
+status says reference numbers were checked; it does not claim semantic verification.
+
+Reference validation runs on the concatenated answer, including `[n]` markers split across
+deltas. Missing or unknown indices produce `sources: []` and `done` with `limited: true`;
+the client removes the provisional text and renders the localized limitation / HR referral.
+Such exchanges are never saved as successful history. Citation-number validation cannot
+prove that each factual claim is semantically supported by its cited passage. Provisional
+streaming exposes text before these checks: incorrect or unreferenced content can briefly be
+visible. Withdrawal cannot undo what a user has already read.
 
 On provider/internal failure the stream ends with `{"type":"error","code":"provider","message":"..."}` containing
 only a generic, non-leaking message. When retrieval returns no permitted passage the stream is
 `{"type":"sources","citations":[]}` followed by `{"type":"done","limited":true,...}` and no
 model call; the UI renders a localized HR-referral notice. The response is `no-store`, and the
 client may abort the request at any time. The client requires exactly one terminal `done` or
-`error` event; EOF without one is an error.
-Server timeouts use error code `timeout`; user aborts stop the request without a terminal event.
+`error` event; EOF without one, malformed events or data after a terminal event are errors.
+Provider failure, transport failure and incomplete streams remove provisional text and citations
+and show a localized failure notice. Server timeouts use error code `timeout` and a distinct
+timeout notice. The Stop button aborts fetch and removes provisional text, showing a cancellation
+notice; user aborts stop the server request without a terminal event. These paths never save a
+successful exchange. Retrying continues from the last successful server-side history.
+
+The provider transport uses choice `index: 0` (the request defaults to `n=1`). Only explicit
+`finish_reason: "stop"` followed by `[DONE]` completes normally. `length`, `content_filter`,
+tool/function calls, unknown reasons, missing reason/index, repeated selected completion frames,
+selected deltas after completion and EOF before `[DONE]` fail closed with a generic provider
+error. Empty-choice annotation/usage frames do not confirm completion; other choices cannot
+confirm the selected choice. The request does not enable tools.
 
 ## Configuration
 
@@ -78,12 +98,26 @@ Citations are bound to server-retrieved `document_chunks.chunk_id`, `documents.d
 `documents.version`. The server returns only referenced citations from the existing ACL-filtered
 store. It rechecks every passage that could have influenced a prior answer by chunk id, document
 id, version and content hash under the caller's current permissions before reusing that exchange.
+Each successful answer carries the union of **all** current retrieval candidates and the complete
+dependency sets of **all** prior exchanges included in its prompt or follow-up retrieval query,
+not only the citations it displays. This propagates transitively across repeated reuse and keeps
+ancestor stamps even after the ancestor exchange is evicted. Revoking HR, for example, omits
+both the original HR exchange and any employee-policy answer influenced by it on the next request.
 Unverifiable exchanges are omitted from the model prompt. This covers database changes to ACL,
 approval, effective date, deletion, version and chunk content. It does not detect changes to a
 source file until ingestion updates the database. Short follow-ups (at most 80 characters,
 beginning with a small set of follow-up phrases such as “¿y…?” or “and…”) add the last verified
 user question to the retrieval query, without adding a model call or a prior answer. Other
 phrasing and ambiguous follow-ups may still retrieve the wrong topic.
+
+Dependencies are deduplicated server-side and capped at
+`MaxContextChunks * (MaxHistoryTurns + 1)` stamps per answer (20 with defaults). History selection
+reserves `MaxContextChunks` stamps for current retrieval, considers at most `MaxHistoryTurns`
+exchanges newest-first, and omits a whole exchange if its full dependencies do not fit. It never
+truncates dependency sets. This can reduce follow-up context in long conversations. Exchanges
+without source stamps are excluded, including their user questions; the client cannot submit
+history, source stamps or permissions. State is in-memory only, so deployment restarts discard
+old exchanges rather than treating pre-change direct-only provenance as transitive.
 
 Chat filters retrieved passages by cosine distance after the authorization-aware SQL search;
 the retrieval API itself is unchanged. `0.35` is a starting bound, not a measure of answer
@@ -117,10 +151,14 @@ by deterministic CI.
 2. `docker compose exec -T web dotnet CompanyAssistant.Web.dll migrate`
 3. `docker compose exec -T web dotnet CompanyAssistant.Web.dll ingest`
 4. Sign in as an assigned `Employee` in a browser, then submit "How do I request annual leave?".
-   Verify a streamed answer appears with a `leave-policy` citation, no HR content, and that
+   Verify provisional text appears before completion, that only a normally completed answer
+   gets final `leave-policy` citations, that the Employee prompt has no HR passages, and that
    "What is the CEO's salary?" returns the localized HR-referral limitation.
 5. From the browser dev tools, confirm the response is `application/x-ndjson`, cached as
-   `no-store`, and that an in-flight request can be aborted with the Stop button.
+   `no-store`, that deltas carry `provisional: true`, and that an in-flight request can be
+   aborted with the Stop button (text removed, cancellation notice). Check timeout and failure
+   withdrawal separately using a controlled test deployment. Review proxy buffering settings
+   if deltas arrive together despite incremental flushes.
 6. Record latency and usage against the evaluation question set; do not commit answers or data.
 
 Real-integration verification is reported separately from the deterministic test suite and is

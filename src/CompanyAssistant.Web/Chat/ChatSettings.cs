@@ -15,6 +15,8 @@ internal sealed record ChatSettings(
 {
     // Cosine distance from pgvector (<=>); deployment-specific calibration is required.
     public double MaxEvidenceDistance { get; init; } = 0.35;
+    // Reserve one retrieval's worth of stamps when selecting reusable history.
+    public int MaxHistorySources => MaxContextChunks * (MaxHistoryTurns + 1);
     public const int DefaultMaxContextChunks = 4;
     public const int DefaultMaxContextChars = 8_000;
     public const int DefaultMaxHistoryTurns = 4;

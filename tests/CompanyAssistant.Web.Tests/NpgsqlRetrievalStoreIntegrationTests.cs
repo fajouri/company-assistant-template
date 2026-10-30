@@ -169,6 +169,38 @@ public sealed class NpgsqlRetrievalStoreIntegrationTests(PostgresDatabaseFixture
         Assert.True(results[1].Distance > 0.35);
     }
 
+    [Theory]
+    [InlineData("revoked")]
+    [InlineData("draft")]
+    [InlineData("deleted")]
+    [InlineData("future")]
+    public async Task History_source_recheck_and_search_apply_the_current_document_lifecycle(string change)
+    {
+        await fixture.ResetAsync();
+        await SeedAsync("it-lifecycle", "Current body", AccessPolicies.Employee);
+        await using var store = fixture.CreateRetrievalStore();
+        var query = FakeEmbeddingClient.VectorFor("Current body");
+        var initial = Assert.Single(await store.SearchAsync(query, [AccessPolicies.Employee], 1, CancellationToken.None));
+        Assert.Single(await store.GetAuthorizedChunksAsync([initial.ChunkId], [AccessPolicies.Employee], CancellationToken.None));
+        var update = change switch
+        {
+            "revoked" => "approval_state = 'revoked'",
+            "draft" => "approval_state = 'draft'",
+            "deleted" => "deleted_at = CURRENT_TIMESTAMP",
+            "future" => "effective_date = CURRENT_DATE + 1",
+            _ => throw new ArgumentException("Unknown test mutation.", nameof(change))
+        };
+        await using (var connection = new NpgsqlConnection(fixture.ConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var command = new NpgsqlCommand(
+                $"UPDATE documents SET {update} WHERE document_id = 'it-lifecycle'", connection);
+            await command.ExecuteNonQueryAsync();
+        }
+        Assert.Empty(await store.GetAuthorizedChunksAsync([initial.ChunkId], [AccessPolicies.Employee, AccessPolicies.Hr], CancellationToken.None));
+        Assert.Empty(await store.SearchAsync(query, [AccessPolicies.Employee, AccessPolicies.Hr], 1, CancellationToken.None));
+    }
+
     private async Task SeedAsync(
         string documentId,
         string content,

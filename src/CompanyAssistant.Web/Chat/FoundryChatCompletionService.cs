@@ -51,6 +51,7 @@ internal sealed class FoundryChatCompletionService(ChatSettings settings, HttpCl
 
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var reader = new StreamReader(stream, Encoding.UTF8);
+        var stoppedNormally = false;
         while (await reader.ReadLineAsync(cancellationToken) is { } line)
         {
             if (line.Length == 0 || !line.StartsWith("data:", StringComparison.Ordinal))
@@ -58,9 +59,29 @@ internal sealed class FoundryChatCompletionService(ChatSettings settings, HttpCl
 
             var data = line["data:".Length..].Trim();
             if (data == "[DONE]")
+            {
+                if (!stoppedNormally)
+                    throw new ChatUnavailableException("Chat completion was not confirmed.");
                 yield break;
+            }
 
-            var text = JsonSerializer.Deserialize<StreamingChunk>(data)?.Choices?.FirstOrDefault()?.Delta?.Content;
+            var chunk = JsonSerializer.Deserialize<StreamingChunk>(data)
+                ?? throw new ChatUnavailableException("Invalid chat stream.");
+            if (chunk.Error is not null)
+                throw new ChatUnavailableException("Chat provider stream failed.");
+            // Request uses the default n=1. Never infer the selected choice from array order.
+            var choices = chunk.Choices?.Where(choice => choice.Index == 0).ToArray() ?? [];
+            if (choices.Length == 0) continue; // e.g. Azure prompt annotations / usage frames.
+            if (choices.Length != 1 || stoppedNormally)
+                throw new ChatUnavailableException("Invalid chat completion state.");
+            var choice = choices[0];
+            if (choice.FinishReason is not null)
+            {
+                if (choice.FinishReason != "stop")
+                    throw new ChatUnavailableException("Chat generation did not complete normally.");
+                stoppedNormally = true;
+            }
+            var text = choice.Delta?.Content;
             if (!string.IsNullOrEmpty(text))
                 yield return new StreamingChatMessageContent(AuthorRole.Assistant, text);
         }
@@ -104,12 +125,21 @@ internal sealed class FoundryChatCompletionService(ChatSettings settings, HttpCl
 
     private sealed class StreamingChunk
     {
+        [JsonPropertyName("error")]
+        public JsonElement? Error { get; set; }
+
         [JsonPropertyName("choices")]
         public List<StreamingChoice>? Choices { get; set; }
     }
 
     private sealed class StreamingChoice
     {
+        [JsonPropertyName("index")]
+        public int? Index { get; set; }
+
+        [JsonPropertyName("finish_reason")]
+        public string? FinishReason { get; set; }
+
         [JsonPropertyName("delta")]
         public StreamingDelta? Delta { get; set; }
     }

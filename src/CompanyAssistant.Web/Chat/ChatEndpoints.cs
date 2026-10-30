@@ -120,7 +120,7 @@ internal static class ChatEndpoints
                         break;
                     case DeltaEvent delta:
                         answer.Append(delta.Text);
-                        await WriteEventAsync(context, new { type = "delta", text = delta.Text }, token);
+                        await WriteEventAsync(context, new { type = "delta", text = delta.Text, provisional = true }, token);
                         break;
                     case DoneEvent done:
                         completed = done;
@@ -137,10 +137,9 @@ internal static class ChatEndpoints
 
             if (completed is null)
                 throw new ChatUnavailableException("Chat stream ended before completion.");
-            if (!completed.Limited && answer.Length > 0 && completed.Sources is { Count: > 0 })
+            if (!token.IsCancellationRequested && !completed.Limited && answer.Length > 0 && completed.Sources is { Count: > 0 })
             {
-                conversations.Append(conversation, "user", message);
-                conversations.Append(conversation, "assistant", answer.ToString(), completed.Sources);
+                conversations.AppendExchange(conversation, message, answer.ToString(), completed.Sources);
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)

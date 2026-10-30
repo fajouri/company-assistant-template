@@ -17,7 +17,7 @@ using Microsoft.SemanticKernel.ChatCompletion;
 
 namespace CompanyAssistant.Web.Tests;
 
-internal sealed class ChatTestFactory(int requestsPerMinute = 10, bool configureChat = true) : WebApplicationFactory<Program>
+internal sealed class ChatTestFactory(int requestsPerMinute = 10, bool configureChat = true, int timeoutSeconds = 30) : WebApplicationFactory<Program>
 {
     internal FakeRetrievalStore RetrievalStore { get; } = new();
     internal FakeEmbeddingClient Embeddings { get; } = new();
@@ -43,6 +43,7 @@ internal sealed class ChatTestFactory(int requestsPerMinute = 10, bool configure
                 values["Chat:ApiKey"] = "fictional-test-key";
                 values["Chat:Deployment"] = "gpt-test";
                 values["Chat:RequestsPerMinute"] = requestsPerMinute.ToString();
+                values["Chat:TimeoutSeconds"] = timeoutSeconds.ToString();
             }
 
             configuration.AddInMemoryCollection(values);

@@ -2,8 +2,10 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using CompanyAssistant.Web.Chat;
 using CompanyAssistant.Web.Knowledge;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace CompanyAssistant.Web.Tests;
 
@@ -46,14 +48,16 @@ public sealed class ChatEndpointTests
         string message,
         string token,
         string? conversationId = null,
-        string objectId = TestApplicationFactory.ObjectId)
+        string objectId = TestApplicationFactory.ObjectId,
+        HttpCompletionOption completion = HttpCompletionOption.ResponseContentRead,
+        CancellationToken cancellationToken = default)
     {
         var request = TestApplicationFactory.Request(HttpMethod.Post, "/api/chat", role, TestApplicationFactory.TenantId, objectId);
         if (token.Length > 0)
             request.Headers.Add("X-CSRF-TOKEN", token);
         request.Content = new StringContent(
             JsonSerializer.Serialize(new { message, conversationId }), Encoding.UTF8, "application/json");
-        return await client.SendAsync(request);
+        return await client.SendAsync(request, completion, cancellationToken);
     }
 
     private static List<JsonElement> ParseEvents(string body) =>
@@ -212,19 +216,120 @@ public sealed class ChatEndpointTests
     }
 
     [Fact]
-    public async Task Partial_provider_answer_is_neither_published_nor_saved()
+    public async Task Partial_provider_answer_is_provisional_and_never_saved()
     {
         using var factory = new ChatTestFactory();
         Seed(factory);
-        factory.ChatCompletion.Deltas.Add("Partial answer [1]");
-        factory.ChatCompletion.FailAfterDeltas = true;
         using var client = CreateClient(factory);
         var token = await AntiforgeryTokenAsync(client, "Employee");
-        using var response = await ChatAsync(client, "Employee", "How much leave?", token);
+        var conversation = factory.Services.GetRequiredService<ConversationStore>()
+            .Create(TestApplicationFactory.TenantId, TestApplicationFactory.ObjectId);
+        factory.ChatCompletion.Deltas.Add("Partial answer [1]");
+        factory.ChatCompletion.FailAfterDeltas = true;
+        using var response = await ChatAsync(client, "Employee", "How much leave?", token, conversation.Id);
         var events = ParseEvents(await response.Content.ReadAsStringAsync());
-        Assert.Single(events);
-        Assert.Equal("error", events[0].GetProperty("type").GetString());
-        Assert.Equal("provider", events[0].GetProperty("code").GetString());
+        Assert.Equal(2, events.Count);
+        Assert.Equal("delta", events[0].GetProperty("type").GetString());
+        Assert.True(events[0].GetProperty("provisional").GetBoolean());
+        Assert.Equal("error", events[1].GetProperty("type").GetString());
+        Assert.Equal("provider", events[1].GetProperty("code").GetString());
+        Assert.Empty(conversation.Turns);
+    }
+
+    [Theory]
+    [InlineData("Answer [99]")]
+    [InlineData("Answer without references")]
+    [InlineData("Mixed references [1] [99]")]
+    public async Task Invalid_references_never_confirm_or_save_provisional_text(string answer)
+    {
+        using var factory = new ChatTestFactory();
+        Seed(factory);
+        using var client = CreateClient(factory);
+        var token = await AntiforgeryTokenAsync(client, "Employee");
+        var conversation = factory.Services.GetRequiredService<ConversationStore>()
+            .Create(TestApplicationFactory.TenantId, TestApplicationFactory.ObjectId);
+        factory.ChatCompletion.Deltas.Add(answer);
+        using var response = await ChatAsync(client, "Employee", "Question", token, conversation.Id);
+        var events = ParseEvents(await response.Content.ReadAsStringAsync());
+        Assert.True(events[0].GetProperty("provisional").GetBoolean());
+        var done = events.Single(e => e.GetProperty("type").GetString() == "done");
+        Assert.True(done.GetProperty("limited").GetBoolean());
+        Assert.Empty(done.GetProperty("citations").EnumerateArray());
+        Assert.Empty(conversation.Turns);
+    }
+
+    [Fact]
+    public async Task First_provisional_delta_is_flushed_before_provider_finishes()
+    {
+        using var factory = new ChatTestFactory();
+        Seed(factory);
+        var finish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        factory.ChatCompletion.Deltas.Add("Answer [1]");
+        factory.ChatCompletion.AfterDeltas = ct => finish.Task.WaitAsync(ct);
+        using var client = CreateClient(factory);
+        var token = await AntiforgeryTokenAsync(client, "Employee");
+        using var response = await ChatAsync(client, "Employee", "Question", token,
+            completion: HttpCompletionOption.ResponseHeadersRead);
+        try
+        {
+            using var reader = new StreamReader(await response.Content.ReadAsStreamAsync());
+            var line = await reader.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            var first = JsonSerializer.Deserialize<JsonElement>(line!);
+            Assert.Equal("delta", first.GetProperty("type").GetString());
+            Assert.True(first.GetProperty("provisional").GetBoolean());
+            Assert.False(finish.Task.IsCompleted);
+            finish.SetResult();
+            var remaining = ParseEvents(await reader.ReadToEndAsync());
+            Assert.False(remaining.Single(e => e.GetProperty("type").GetString() == "done").GetProperty("limited").GetBoolean());
+        }
+        finally { finish.TrySetResult(); }
+    }
+
+    [Fact]
+    public async Task Timeout_after_delta_emits_timeout_and_does_not_save_exchange()
+    {
+        using var factory = new ChatTestFactory(timeoutSeconds: 5);
+        Seed(factory);
+        factory.ChatCompletion.Deltas.Add("Partial [1]");
+        factory.ChatCompletion.AfterDeltas = ct => Task.Delay(Timeout.Infinite, ct);
+        using var client = CreateClient(factory);
+        var token = await AntiforgeryTokenAsync(client, "Employee");
+        var conversation = factory.Services.GetRequiredService<ConversationStore>()
+            .Create(TestApplicationFactory.TenantId, TestApplicationFactory.ObjectId);
+        using var response = await ChatAsync(client, "Employee", "Question", token, conversation.Id);
+        var events = ParseEvents(await response.Content.ReadAsStringAsync());
+        Assert.Equal("delta", events[0].GetProperty("type").GetString());
+        Assert.Equal("timeout", events[^1].GetProperty("code").GetString());
+        Assert.DoesNotContain(events, item => item.GetProperty("type").GetString() == "done");
+        Assert.Empty(conversation.Turns);
+    }
+
+    [Fact]
+    public async Task User_cancellation_reaches_provider_without_saving_partial_exchange()
+    {
+        using var factory = new ChatTestFactory();
+        Seed(factory);
+        var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        factory.ChatCompletion.Deltas.Add("Partial [1]");
+        factory.ChatCompletion.AfterDeltas = async ct =>
+        {
+            try { await Task.Delay(Timeout.Infinite, ct); }
+            finally { if (ct.IsCancellationRequested) cancelled.TrySetResult(); }
+        };
+        using var client = CreateClient(factory);
+        var token = await AntiforgeryTokenAsync(client, "Employee");
+        var conversation = factory.Services.GetRequiredService<ConversationStore>()
+            .Create(TestApplicationFactory.TenantId, TestApplicationFactory.ObjectId);
+        using var cts = new CancellationTokenSource();
+        using var response = await ChatAsync(client, "Employee", "Question", token, conversation.Id,
+            completion: HttpCompletionOption.ResponseHeadersRead, cancellationToken: cts.Token);
+        using var reader = new StreamReader(await response.Content.ReadAsStreamAsync());
+        Assert.Contains("delta", await reader.ReadLineAsync());
+        cts.Cancel();
+        reader.Dispose();
+        response.Dispose(); // aborting fetch also closes its response body
+        await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Empty(conversation.Turns);
     }
 
     [Fact]

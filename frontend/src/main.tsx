@@ -1,6 +1,7 @@
-import {useEffect, useRef, useState} from 'react';
+import {useEffect, useReducer, useRef, useState} from 'react';
 import {createRoot} from 'react-dom/client';
-import {runChat, type Citation} from './chatStream';
+import {ChatStreamError, runChat} from './chatStream';
+import {answerReducer, initialAnswer} from './chatState';
 import './style.css';
 
 type Lang = 'es' | 'en';
@@ -21,10 +22,14 @@ const copy = {
     button: 'Enviar',
     stop: 'Detener',
     thinking: 'Pensando…',
+    provisional: 'Generando respuesta provisional. Aún no verificada; puede contener errores.',
+    confirmed: 'Respuesta completada; referencias comprobadas. Esto no garantiza el respaldo de cada afirmación.',
+    cancelled: 'Generación cancelada. Se ha retirado el texto provisional.',
+    timeout: 'Se agotó el tiempo de espera. Se ha retirado el texto provisional.',
     sourcesLabel: 'Fuentes',
     answerLabel: 'Respuesta del asistente',
     noAnswer: 'No encontré una respuesta en las políticas disponibles. Para este tema, contacta con Recursos Humanos.',
-    chatError: 'No se pudo obtener una respuesta. Inténtalo de nuevo.',
+    chatError: 'No se pudo completar la respuesta. Se ha retirado el texto provisional. Inténtalo de nuevo.',
     needLogin: 'Inicia sesión para hacer preguntas.',
     noPermission: 'Tu cuenta no tiene permiso para usar el asistente.',
     error: 'No se pudo cargar la configuración. Se muestra la marca de ejemplo.',
@@ -45,10 +50,14 @@ const copy = {
     button: 'Send',
     stop: 'Stop',
     thinking: 'Thinking…',
+    provisional: 'Generating a provisional answer. Not yet verified; it may contain errors.',
+    confirmed: 'Answer completed; references checked. This does not guarantee support for every claim.',
+    cancelled: 'Generation cancelled. Provisional text has been removed.',
+    timeout: 'The request timed out. Provisional text has been removed.',
     sourcesLabel: 'Sources',
     answerLabel: 'Assistant answer',
     noAnswer: "I couldn't find an answer in the available policies. For this topic, please contact HR.",
-    chatError: 'The answer could not be loaded. Please try again.',
+    chatError: 'The answer could not be completed. Provisional text has been removed. Please try again.',
     needLogin: 'Sign in to ask questions.',
     noPermission: 'Your account does not have permission to use the assistant.',
     error: 'Configuration could not be loaded. Showing sample branding.',
@@ -78,9 +87,9 @@ function App() {
   const [csrfToken, setCsrfToken] = useState('');
 
   const [message, setMessage] = useState('');
-  const [answer, setAnswer] = useState('');
-  const [sources, setSources] = useState<Citation[]>([]);
-  const [limited, setLimited] = useState(false);
+  const [answerState, dispatchAnswer] = useReducer(answerReducer, initialAnswer);
+  const {text: answer, citations: sources, phase} = answerState;
+  const limited = phase === 'limited';
   const [busy, setBusy] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [chatError, setChatError] = useState<string | null>(null);
@@ -138,9 +147,7 @@ function App() {
     const question = message.trim();
     if (!canChat || busy || !question || !csrfToken) return;
 
-    setAnswer('');
-    setSources([]);
-    setLimited(false);
+    dispatchAnswer({type: 'begin'});
     setChatError(null);
     setBusy(true);
 
@@ -148,20 +155,18 @@ function App() {
     abortRef.current = controller;
     try {
       await runChat(csrfToken, question, conversationId, event => {
-        if (event.type === 'sources') return;
-        else if (event.type === 'delta') setAnswer(current => current + event.text);
-        else if (event.type === 'done') {
+        dispatchAnswer(event);
+        if (event.type === 'done') {
           setConversationId(event.conversationId);
-          setLimited(event.limited);
-          setSources(event.citations);
-        } else if (event.type === 'error') setChatError(event.message);
+        }
       }, controller.signal);
     } catch (e) {
-      if (e instanceof Error && e.name === 'AbortError') return;
-      setAnswer('');
-      setSources([]);
-      setLimited(false);
-      setChatError(t.chatError);
+      if (controller.signal.aborted) dispatchAnswer({type: 'cancelled'});
+      else if (e instanceof ChatStreamError && e.code === 'timeout') dispatchAnswer({type: 'timeout'});
+      else {
+        dispatchAnswer({type: 'failed'});
+        setChatError(t.chatError);
+      }
     } finally {
       setBusy(false);
       abortRef.current = null;
@@ -213,8 +218,12 @@ function App() {
           </form>
         </section>
 
-        {(busy || answer || limited || chatError) && (
+        {phase !== 'idle' && (
           <section className="answer" aria-label={t.answerLabel}>
+            <p className="answer-status" role="status">
+              {phase === 'generating' ? t.provisional : phase === 'confirmed' ? t.confirmed
+                : phase === 'cancelled' ? t.cancelled : phase === 'timeout' ? t.timeout : ''}
+            </p>
             {sources.length > 0 && (
               <div>
                 <h2 className="sources-title">{t.sourcesLabel}</h2>

@@ -13,5 +13,11 @@ No raw conversation logging by default. Separate audit permissions and pseudonym
 Encrypted host storage/backups, tested restore and deletion reapplication.
 Reviewed immutable image digests, dependency lockfiles, SBOM, scanning and signed releases before production.
 ## Threats to test
+Chat deliberately displays provisional model text before reference-number checks. It is labelled
+unverified and withdrawn on failure, limitation, timeout or cancellation, but this cannot prevent
+users from seeing incorrect content during generation. Final citation checks do not prove factual
+support. Reusable answers carry bounded transitive source stamps, rechecked under current ACLs
+and database document state before every reuse. Changes to source files take effect after ingestion.
+
 Cross-user access, privilege escalation, prompt injection, poisoned policies, citation forgery, cross-conversation access, source-link leaks, unsafe markdown, SSRF, secret leakage and telemetry disclosure.
 GDPR compliance cannot be established by this codebase alone.

@@ -47,9 +47,11 @@ internal sealed class ConversationStore(ChatSettings settings)
         return conversation;
     }
 
-    public void Append(Conversation conversation, string role, string text, IReadOnlyList<SourceStamp>? sources = null)
+    public void AppendExchange(Conversation conversation, string question, string answer, IReadOnlyList<SourceStamp> sources)
     {
-        conversation.Append(role, text, settings.MaxHistoryTurns, sources);
+        if (sources.Count == 0 || sources.Count > settings.MaxHistorySources)
+            throw new ArgumentException("A complete bounded dependency set is required.", nameof(sources));
+        conversation.AppendExchange(question, answer, settings.MaxHistoryTurns, sources);
     }
 }
 
@@ -72,18 +74,20 @@ internal sealed class Conversation
         }
     }
 
-    public void Append(string role, string text, int maxHistoryTurns, IReadOnlyList<SourceStamp>? sources = null)
+    public void AppendExchange(string question, string answer, int maxHistoryTurns, IReadOnlyList<SourceStamp> sources)
     {
-        var bounded = text.Length <= ConversationTurn.MaxTurnChars
-            ? text
-            : text[..ConversationTurn.MaxTurnChars];
-
         lock (_turns)
         {
-            _turns.Add(new ConversationTurn(role, bounded, sources));
+            // Keep each question paired with the exact answer and provenance from its
+            // generation, even when requests to this conversation finish concurrently.
+            _turns.Add(new ConversationTurn("user", Bound(question)));
+            _turns.Add(new ConversationTurn("assistant", Bound(answer), sources.ToArray()));
             var maxEntries = maxHistoryTurns * 2;
             while (_turns.Count > maxEntries)
                 _turns.RemoveAt(0);
         }
     }
+
+    private static string Bound(string text) => text.Length <= ConversationTurn.MaxTurnChars
+        ? text : text[..ConversationTurn.MaxTurnChars];
 }
