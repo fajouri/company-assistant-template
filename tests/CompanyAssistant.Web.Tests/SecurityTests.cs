@@ -37,6 +37,9 @@ public sealed class SecurityTests(TestApplicationFactory factory) : IClassFixtur
     [InlineData("AzureAd:ClientSecret", "")]
     [InlineData("AzureAd:CallbackPath", "https://evil.example/callback")]
     [InlineData("AzureAd:SignedOutCallbackPath", "/other")]
+    [InlineData("AzureAd:SignedOutCallbackPath", "/signout-oidc")]
+    [InlineData("AzureAd:RemoteSignOutPath", "/other")]
+    [InlineData("AzureAd:RemoteSignOutPath", "/signout-callback-oidc")]
     public void Missing_or_invalid_identity_configuration_fails_closed(string key, string value)
     {
         var values = TestApplicationFactory.TestConfiguration();

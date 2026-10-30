@@ -32,10 +32,12 @@ internal sealed record EntraIdentitySettings(Guid TenantId, Guid ClientId, strin
             throw new InvalidOperationException("AzureAd:ClientId must be a non-empty application GUID.");
         if (string.IsNullOrWhiteSpace(section["ClientSecret"]))
             throw new InvalidOperationException("AzureAd:ClientSecret must be supplied through secret configuration.");
-        if (section["CallbackPath"] != "/signin-oidc")
-            throw new InvalidOperationException("AzureAd:CallbackPath must be /signin-oidc.");
-        if (section["SignedOutCallbackPath"] != "/signout-oidc")
-            throw new InvalidOperationException("AzureAd:SignedOutCallbackPath must be /signout-oidc.");
+        if (section["CallbackPath"] != IdentityPaths.SignInCallbackPath)
+            throw new InvalidOperationException($"AzureAd:CallbackPath must be {IdentityPaths.SignInCallbackPath}.");
+        if (section["SignedOutCallbackPath"] != IdentityPaths.SignedOutCallbackPath)
+            throw new InvalidOperationException($"AzureAd:SignedOutCallbackPath must be {IdentityPaths.SignedOutCallbackPath}.");
+        if (section["RemoteSignOutPath"] != IdentityPaths.RemoteSignOutPath)
+            throw new InvalidOperationException($"AzureAd:RemoteSignOutPath must be {IdentityPaths.RemoteSignOutPath}.");
 
         return new EntraIdentitySettings(
             tenantId,

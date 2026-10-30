@@ -41,6 +41,11 @@ internal static partial class IdentitySetup
         options.ResponseType = OpenIdConnectResponseType.Code;
         options.UsePkce = true;
         options.SaveTokens = false;
+        // The login callback, post-logout callback and front-channel logout paths must stay
+        // distinct: OpenIdConnectHandler routes RemoteSignOutPath before SignedOutCallbackPath.
+        options.CallbackPath = IdentityPaths.SignInCallbackPath;
+        options.SignedOutCallbackPath = IdentityPaths.SignedOutCallbackPath;
+        options.RemoteSignOutPath = IdentityPaths.RemoteSignOutPath;
         options.GetClaimsFromUserInfoEndpoint = false;
         options.MapInboundClaims = false;
         options.Scope.Clear();

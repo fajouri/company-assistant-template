@@ -14,15 +14,19 @@ The backend uses Microsoft.Identity.Web 4.16.1 with single-tenant OpenID Connect
 
 The session cookie is `__Host-` prefixed, HTTP-only, Secure, SameSite=Lax and limited to eight hours with sliding expiration. OIDC correlation/nonce cookies are Secure and SameSite=None because the identity provider posts back cross-site. Session and antiforgery responses are not cached. Authentication libraries log at Warning or above; do not enable token/PII debug logging.
 
+The three OIDC paths are intentionally distinct: `/signin-oidc` is the login callback, `/signout-callback-oidc` is the post-logout callback that Entra returns to (`post_logout_redirect_uri`) before the app redirects to `/`, and `/signout-oidc` is the front-channel (remote) logout URL. `OpenIdConnectHandler` matches the remote sign-out path before the signed-out callback path, so making them equal would swallow the post-logout return and skip the final redirect.
+
 ## Register the application
 
 Use a test tenant for setup and verification. Do not use employee names, real identifiers or real conversations in source-controlled fixtures.
 
 1. In **Microsoft Entra admin center > Entra ID > App registrations**, create a registration for **Accounts in this organizational directory only (single tenant)**. Record its application/client ID and directory/tenant ID.
 2. Under **Authentication**, add **Web** redirect URIs. Use exact HTTPS URIs, not wildcards:
-   - Local: `https://localhost:5001/signin-oidc`
-   - Production example: `https://assistant.example.com/signin-oidc`
-   Set local and production front-channel logout URLs respectively to `https://localhost:5001/signout-oidc` and `https://assistant.example.com/signout-oidc`. Replace the example host with the actual company host.
+   - Local login: `https://localhost:5001/signin-oidc`
+   - Local post-logout: `https://localhost:5001/signout-callback-oidc`
+   - Production login example: `https://assistant.example.com/signin-oidc`
+   - Production post-logout example: `https://assistant.example.com/signout-callback-oidc`
+   Set local and production front-channel logout URLs respectively to `https://localhost:5001/signout-oidc` and `https://assistant.example.com/signout-oidc`. Replace the example host with the actual company host. The login callback (`/signin-oidc`), post-logout callback (`/signout-callback-oidc`) and front-channel logout URL (`/signout-oidc`) must remain distinct.
 3. Under **Certificates & secrets**, create a short-lived client secret for the local test registration and record its value once. Do not put it in `appsettings.json`, `.env.example`, source control, tickets or logs. A production deployment should inject a separately managed secret and rotate it before expiry.
 4. Under **App roles**, create these roles with **Users/Groups** as the allowed member type. The values are case-sensitive:
 
@@ -70,7 +74,7 @@ Inject configuration through the deployment secret/configuration system:
 
 - `AzureAd__Instance=https://login.microsoftonline.com/`
 - `AzureAd__TenantId`, `AzureAd__ClientId` and `AzureAd__ClientSecret`
-- `AzureAd__CallbackPath=/signin-oidc` and `AzureAd__SignedOutCallbackPath=/signout-oidc`
+- `AzureAd__CallbackPath=/signin-oidc`, `AzureAd__SignedOutCallbackPath=/signout-callback-oidc` and `AzureAd__RemoteSignOutPath=/signout-oidc`
 - `DataProtection__KeyPath=/var/lib/company-assistant/dataprotection`
 - `ForwardedHeaders__KnownProxies__0=<exact-reverse-proxy-ip>` for each trusted proxy
 

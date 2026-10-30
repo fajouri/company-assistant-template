@@ -58,7 +58,8 @@ public sealed class TestApplicationFactory : WebApplicationFactory<Program>
         ["AzureAd:ClientId"] = ClientId,
         ["AzureAd:ClientSecret"] = "fictional-test-configuration-not-a-real-secret",
         ["AzureAd:CallbackPath"] = "/signin-oidc",
-        ["AzureAd:SignedOutCallbackPath"] = "/signout-oidc",
+        ["AzureAd:SignedOutCallbackPath"] = "/signout-callback-oidc",
+        ["AzureAd:RemoteSignOutPath"] = "/signout-oidc",
         ["DataProtection:KeyPath"] = Path.Combine(Path.GetTempPath(), "company-assistant-tests", Guid.NewGuid().ToString("N"))
     };
 
