@@ -49,6 +49,19 @@ internal sealed class IngestionService(
                 continue;
             }
 
+            // A metadata-only change (approval state, access policy, version, path) leaves
+            // the body and its embeddings valid, so it can be applied without the embeddings
+            // provider. This is what makes revocations and access-policy restrictions stick
+            // even when embeddings are unavailable.
+            if (existing is not null && existing.Content == parsed.Content)
+            {
+                await store.UpdateMetadataAsync(
+                    new IngestedDocument(parsed.Metadata, file.RelativePath, parsed.Content, parsed.ContentSha256, []),
+                    ct);
+                indexed++;
+                continue;
+            }
+
             IReadOnlyList<IngestedChunk> chunks = [];
             if (parsed.Chunks.Count > 0)
             {

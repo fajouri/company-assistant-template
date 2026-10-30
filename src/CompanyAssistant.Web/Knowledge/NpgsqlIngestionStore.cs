@@ -125,6 +125,53 @@ internal sealed class NpgsqlIngestionStore : IIngestionStore, IAsyncDisposable
         await transaction.CommitAsync(ct);
     }
 
+    public async Task UpdateMetadataAsync(IngestedDocument document, CancellationToken ct)
+    {
+        await using var connection = await _dataSource.Value.OpenConnectionAsync(ct);
+        await using var transaction = await connection.BeginTransactionAsync(ct);
+        await SetRoleAsync(connection, transaction, _role, ct);
+
+        await using (var command = new NpgsqlCommand(
+            "UPDATE documents SET title = $2, owner = $3, approver = $4, version = $5, " +
+            "effective_date = $6, review_date = $7, approval_state = $8, access_policy = $9, " +
+            "source_path = $10, content_sha256 = $11, deleted_at = NULL, updated_at = now() " +
+            "WHERE document_id = $1",
+            connection, transaction))
+        {
+            command.Parameters.AddWithValue(document.Metadata.DocumentId);
+            command.Parameters.AddWithValue(document.Metadata.Title);
+            command.Parameters.AddWithValue(document.Metadata.Owner);
+            command.Parameters.Add(document.Metadata.Approver is null
+                ? new NpgsqlParameter { Value = DBNull.Value }
+                : new NpgsqlParameter { Value = document.Metadata.Approver });
+            command.Parameters.AddWithValue(document.Metadata.Version);
+            command.Parameters.AddWithValue(document.Metadata.EffectiveDate);
+            command.Parameters.Add(document.Metadata.ReviewDate is null
+                ? new NpgsqlParameter { Value = DBNull.Value }
+                : new NpgsqlParameter { Value = document.Metadata.ReviewDate.Value });
+            command.Parameters.AddWithValue(document.Metadata.ApprovalState);
+            command.Parameters.AddWithValue(document.Metadata.AccessPolicy);
+            command.Parameters.AddWithValue(document.SourcePath);
+            command.Parameters.AddWithValue(document.ContentSha256);
+            await command.ExecuteNonQueryAsync(ct);
+        }
+
+        await using (var command = new NpgsqlCommand(
+            "INSERT INTO document_versions (document_id, version, approval_state, effective_date, content_sha256) " +
+            "VALUES ($1, $2, $3, $4, $5)",
+            connection, transaction))
+        {
+            command.Parameters.AddWithValue(document.Metadata.DocumentId);
+            command.Parameters.AddWithValue(document.Metadata.Version);
+            command.Parameters.AddWithValue(document.Metadata.ApprovalState);
+            command.Parameters.AddWithValue(document.Metadata.EffectiveDate);
+            command.Parameters.AddWithValue(document.ContentSha256);
+            await command.ExecuteNonQueryAsync(ct);
+        }
+
+        await transaction.CommitAsync(ct);
+    }
+
     public async Task<int> SoftDeleteMissingAsync(IReadOnlySet<string> seenSourcePaths, CancellationToken ct)
     {
         await using var connection = await _dataSource.Value.OpenConnectionAsync(ct);

@@ -135,4 +135,97 @@ public sealed class IngestionServiceTests
         Assert.Empty(store.Upserts);
         Assert.Equal(0, report.Deleted);
     }
+
+    [Fact]
+    public async Task Revocation_is_applied_without_embeddings_when_provider_fails()
+    {
+        using var temp = new TempDirectory();
+        var path = Path.Combine(temp.Path, "a.md");
+        File.WriteAllText(path, MarkdownFixtures.Policy("a"));
+
+        var store = new FakeIngestionStore();
+        var embeddings = new FakeEmbeddingClient();
+        var service = CreateService(store, embeddings, temp.Path);
+        await service.RunAsync(CancellationToken.None);
+        Assert.Equal(ApprovalStates.Approved, store.Documents["a"].ApprovalState);
+
+        File.WriteAllText(path, MarkdownFixtures.Policy("a", approvalState: "revoked"));
+        embeddings.FailOnTexts.Add("Fictional");
+        await service.RunAsync(CancellationToken.None);
+
+        Assert.Equal(ApprovalStates.Revoked, store.Documents["a"].ApprovalState);
+        Assert.Equal(1, embeddings.EmbedCallCount);
+        Assert.Empty(store.Upserts.Skip(1));
+        Assert.Single(store.MetadataUpdates);
+    }
+
+    [Fact]
+    public async Task Access_restriction_is_applied_without_embeddings_when_provider_fails()
+    {
+        using var temp = new TempDirectory();
+        var path = Path.Combine(temp.Path, "a.md");
+        File.WriteAllText(path, MarkdownFixtures.Policy("a", accessPolicy: "employee"));
+
+        var store = new FakeIngestionStore();
+        var embeddings = new FakeEmbeddingClient();
+        var service = CreateService(store, embeddings, temp.Path);
+        await service.RunAsync(CancellationToken.None);
+
+        File.WriteAllText(path, MarkdownFixtures.Policy("a", accessPolicy: "hr"));
+        embeddings.FailOnTexts.Add("Fictional");
+        await service.RunAsync(CancellationToken.None);
+
+        Assert.Equal(AccessPolicies.Hr, store.Documents["a"].AccessPolicy);
+        Assert.Equal(1, embeddings.EmbedCallCount);
+    }
+
+    [Fact]
+    public async Task Content_change_does_not_publish_when_embeddings_fail()
+    {
+        using var temp = new TempDirectory();
+        var path = Path.Combine(temp.Path, "a.md");
+        File.WriteAllText(path, MarkdownFixtures.Policy("a", body: "# One\n\nOriginal body.\n"));
+
+        var store = new FakeIngestionStore();
+        var embeddings = new FakeEmbeddingClient();
+        var service = CreateService(store, embeddings, temp.Path);
+        await service.RunAsync(CancellationToken.None);
+        var original = store.Documents["a"];
+
+        File.WriteAllText(path, MarkdownFixtures.Policy("a", body: "# Two\n\nChanged body.\n"));
+        embeddings.FailOnTexts.Add("Changed");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.RunAsync(CancellationToken.None));
+
+        Assert.Equal(original.Content, store.Documents["a"].Content);
+        Assert.Equal(original.ContentSha256, store.Documents["a"].ContentSha256);
+        Assert.Single(store.Upserts);
+        Assert.Empty(store.MetadataUpdates);
+    }
+
+    [Fact]
+    public async Task Content_change_recovers_after_embeddings_recover_and_is_idempotent()
+    {
+        using var temp = new TempDirectory();
+        var path = Path.Combine(temp.Path, "a.md");
+        File.WriteAllText(path, MarkdownFixtures.Policy("a", body: "# One\n\nOriginal body.\n"));
+
+        var store = new FakeIngestionStore();
+        var embeddings = new FakeEmbeddingClient();
+        var service = CreateService(store, embeddings, temp.Path);
+        await service.RunAsync(CancellationToken.None);
+
+        File.WriteAllText(path, MarkdownFixtures.Policy("a", body: "# Two\n\nChanged body.\n"));
+        embeddings.FailOnTexts.Add("Changed");
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.RunAsync(CancellationToken.None));
+
+        embeddings.FailOnTexts.Clear();
+        await service.RunAsync(CancellationToken.None);
+        Assert.Equal("# Two\n\nChanged body.", store.Documents["a"].Content);
+
+        var upserts = store.Upserts.Count;
+        await service.RunAsync(CancellationToken.None);
+        Assert.Equal(upserts, store.Upserts.Count);
+        Assert.Single(store.Documents);
+    }
 }

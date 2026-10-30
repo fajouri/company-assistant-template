@@ -8,8 +8,11 @@ internal sealed class FakeEmbeddingClient(int dimensions = 1536) : IEmbeddingCli
 
     public HashSet<string> FailOnTexts { get; } = new(StringComparer.Ordinal);
 
+    public int EmbedCallCount { get; private set; }
+
     public Task<IReadOnlyList<float[]>> EmbedAsync(IReadOnlyList<string> texts, CancellationToken ct)
     {
+        EmbedCallCount++;
         if (texts.Any(text => FailOnTexts.Any(marker => text.Contains(marker, StringComparison.Ordinal))))
             throw new InvalidOperationException("Forced embedding failure.");
 
@@ -42,6 +45,7 @@ internal sealed class FakeIngestionStore : IIngestionStore
 {
     public Dictionary<string, StoredDocument> Documents { get; } = new(StringComparer.Ordinal);
     public List<IngestedDocument> Upserts { get; } = new();
+    public List<IngestedDocument> MetadataUpdates { get; } = new();
     public List<IReadOnlySet<string>> SoftDeleteCalls { get; } = new();
     public Action<IngestedDocument>? OnUpsert { get; set; }
 
@@ -53,6 +57,27 @@ internal sealed class FakeIngestionStore : IIngestionStore
         OnUpsert?.Invoke(document);
         Upserts.Add(document);
         Documents[document.Metadata.DocumentId] = ToStored(document, deletedAt: null);
+        return Task.CompletedTask;
+    }
+
+    public Task UpdateMetadataAsync(IngestedDocument document, CancellationToken ct)
+    {
+        MetadataUpdates.Add(document);
+        var existing = Documents[document.Metadata.DocumentId];
+        Documents[document.Metadata.DocumentId] = existing with
+        {
+            SourcePath = document.SourcePath,
+            ContentSha256 = document.ContentSha256,
+            Title = document.Metadata.Title,
+            Owner = document.Metadata.Owner,
+            Approver = document.Metadata.Approver,
+            Version = document.Metadata.Version,
+            EffectiveDate = document.Metadata.EffectiveDate,
+            ReviewDate = document.Metadata.ReviewDate,
+            ApprovalState = document.Metadata.ApprovalState,
+            AccessPolicy = document.Metadata.AccessPolicy,
+            DeletedAt = null
+        };
         return Task.CompletedTask;
     }
 
