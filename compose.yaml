@@ -15,6 +15,9 @@ services:
       Embeddings__Endpoint: ${EMBEDDINGS__ENDPOINT:-}
       Embeddings__ApiKey: ${EMBEDDINGS__API_KEY:-}
       Embeddings__Deployment: ${EMBEDDINGS__DEPLOYMENT:-}
+      Chat__Endpoint: ${CHAT__ENDPOINT:-}
+      Chat__ApiKey: ${CHAT__API_KEY:-}
+      Chat__Deployment: ${CHAT__DEPLOYMENT:-}
     volumes:
       - ./fixtures/policies:/data/policies:ro
     read_only: true
