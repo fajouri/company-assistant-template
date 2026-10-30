@@ -323,6 +323,169 @@ public sealed class ChatServiceTests
         Assert.DoesNotContain(completion.LastHistory!, item => item.Content?.Contains("Unverifiable", StringComparison.Ordinal) == true);
         Assert.Equal("And next?", embeddings.LastTexts.Single());
     }
+
+    private static string PassagesSection(string prompt)
+    {
+        var header = "Reference passages:\n";
+        var start = prompt.IndexOf(header, StringComparison.Ordinal) + header.Length;
+        var end = prompt.IndexOf("\nQuestion:", start, StringComparison.Ordinal);
+        return end < 0 ? prompt[start..] : prompt[start..end];
+    }
+
+    [Fact]
+    public async Task Passages_section_stays_within_MaxContextChars_budget()
+    {
+        var settings = Settings(maxContextChunks: 20, maxContextChars: 1_000);
+        var store = new FakeRetrievalStore();
+        store.Chunks.Add((FakeRetrievalStore.ChunkFor("doc-1", "Policy one", new string('A', 2000), AccessPolicies.Employee), AccessPolicies.Employee));
+        store.Chunks.Add((FakeRetrievalStore.ChunkFor("doc-2", "Policy two", new string('B', 2000), AccessPolicies.Employee), AccessPolicies.Employee));
+        store.Chunks.Add((FakeRetrievalStore.ChunkFor("doc-3", "Policy three", new string('C', 2000), AccessPolicies.Employee), AccessPolicies.Employee));
+        var completion = new FakeChatCompletionService { Deltas = { "Answer [1]." } };
+        var service = CreateService(store, new FakeEmbeddingClient(), completion, settings);
+
+        var events = await RunAsync(service, "What does it say?", [AppPermissions.AssistantUse]);
+
+        var done = Assert.IsType<DoneEvent>(events[^1]);
+        Assert.False(done.Limited);
+        Assert.Single(done.Citations);
+        Assert.Equal("doc-1", done.Citations[0].DocumentId);
+
+        var prompt = completion.LastHistory!
+            .Select(message => message.Content)
+            .OfType<string>()
+            .First(content => content.Contains("Reference passages"));
+        var section = PassagesSection(prompt);
+        Assert.InRange(section.Length, 1, settings.MaxContextChars);
+        Assert.Contains("Policy one", section);
+        Assert.DoesNotContain("Policy two", section);
+        Assert.DoesNotContain("Policy three", section);
+    }
+
+    [Fact]
+    public async Task Long_titles_and_metadata_consume_the_budget()
+    {
+        var settings = Settings(maxContextChunks: 20, maxContextChars: 1_000);
+        var store = new FakeRetrievalStore();
+        var longTitle = new string('T', 200);
+        var longDocumentId = new string('D', 200);
+        var longVersion = new string('V', 200);
+        store.Chunks.Add((
+            new RetrievedChunk(1, longDocumentId, longTitle, longVersion, 0, null, new string('A', 2000), 0.1),
+            AccessPolicies.Employee));
+        var completion = new FakeChatCompletionService { Deltas = { "Answer [1]." } };
+        var service = CreateService(store, new FakeEmbeddingClient(), completion, settings);
+
+        var events = await RunAsync(service, "Q", [AppPermissions.AssistantUse]);
+
+        var done = Assert.IsType<DoneEvent>(events[^1]);
+        Assert.False(done.Limited);
+
+        var prompt = completion.LastHistory!
+            .Select(message => message.Content)
+            .OfType<string>()
+            .First(content => content.Contains("Reference passages"));
+        var section = PassagesSection(prompt);
+        Assert.True(section.Length <= settings.MaxContextChars);
+        Assert.Contains(longTitle, section);
+        Assert.Contains(longDocumentId, section);
+        Assert.Contains(longVersion, section);
+    }
+
+    [Fact]
+    public async Task Omitted_chunks_do_not_appear_in_prompt_or_as_citations()
+    {
+        var settings = Settings(maxContextChunks: 20, maxContextChars: 1_000);
+        var store = new FakeRetrievalStore();
+        store.Chunks.Add((FakeRetrievalStore.ChunkFor("doc-1", "Included", new string('A', 950), AccessPolicies.Employee), AccessPolicies.Employee));
+        store.Chunks.Add((FakeRetrievalStore.ChunkFor("doc-2", "Omitted", new string('B', 2000), AccessPolicies.Employee), AccessPolicies.Employee));
+        // The model cites the omitted chunk [2], which was never sent to the model.
+        var completion = new FakeChatCompletionService { Deltas = { "See [2]." } };
+        var service = CreateService(store, new FakeEmbeddingClient(), completion, settings);
+
+        var events = await RunAsync(service, "Q", [AppPermissions.AssistantUse]);
+
+        var prompt = completion.LastHistory!
+            .Select(message => message.Content)
+            .OfType<string>()
+            .First(content => content.Contains("Reference passages"));
+        var section = PassagesSection(prompt);
+        Assert.True(section.Length <= settings.MaxContextChars);
+        Assert.Contains("Included", section);
+        Assert.DoesNotContain("Omitted", section);
+
+        var done = Assert.IsType<DoneEvent>(events[^1]);
+        Assert.True(done.Limited);
+        Assert.Empty(done.Citations);
+    }
+
+    [Fact]
+    public async Task Citation_indices_match_included_chunks_after_truncation()
+    {
+        var settings = Settings(maxContextChunks: 20, maxContextChars: 1_000);
+        var store = new FakeRetrievalStore();
+        store.Chunks.Add((FakeRetrievalStore.ChunkFor("doc-1", "First", new string('A', 950), AccessPolicies.Employee), AccessPolicies.Employee));
+        store.Chunks.Add((FakeRetrievalStore.ChunkFor("doc-2", "Second", new string('B', 950), AccessPolicies.Employee), AccessPolicies.Employee));
+        var completion = new FakeChatCompletionService { Deltas = { "Per [1] only." } };
+        var service = CreateService(store, new FakeEmbeddingClient(), completion, settings);
+
+        var events = await RunAsync(service, "Q", [AppPermissions.AssistantUse]);
+
+        var done = Assert.IsType<DoneEvent>(events[^1]);
+        Assert.False(done.Limited);
+        Assert.Single(done.Citations);
+        Assert.Equal(1, done.Citations[0].Index);
+        Assert.Equal("doc-1", done.Citations[0].DocumentId);
+    }
+
+    [Fact]
+    public async Task If_no_chunk_fits_budget_model_is_not_called()
+    {
+        var settings = Settings(maxContextChunks: 20, maxContextChars: 100);
+        var store = new FakeRetrievalStore();
+        // The citation header alone exceeds the 100-char budget, so no useful chunk fits.
+        store.Chunks.Add((
+            new RetrievedChunk(1, new string('D', 20), new string('T', 50), new string('V', 20), 0, null, new string('A', 2000), 0.1),
+            AccessPolicies.Employee));
+        var completion = new FakeChatCompletionService { Deltas = { "should not run" } };
+        var service = CreateService(store, new FakeEmbeddingClient(), completion, settings);
+
+        var events = await RunAsync(service, "Q", [AppPermissions.AssistantUse]);
+
+        Assert.Equal(0, completion.StreamingCallCount);
+        var done = Assert.IsType<DoneEvent>(events[^1]);
+        Assert.True(done.Limited);
+        Assert.Empty(done.Citations);
+    }
+
+    [Fact]
+    public async Task Included_sources_are_registered_and_revalidated_in_history()
+    {
+        var settings = Settings(maxContextChunks: 20, maxContextChars: 1_000);
+        var store = new FakeRetrievalStore();
+        store.Chunks.Add((FakeRetrievalStore.ChunkFor("doc-1", "First", new string('A', 950), AccessPolicies.Employee), AccessPolicies.Employee));
+        store.Chunks.Add((FakeRetrievalStore.ChunkFor("doc-2", "Second", new string('B', 950), AccessPolicies.Employee), AccessPolicies.Employee));
+        var completion = new FakeChatCompletionService { Deltas = { "Per [1]." } };
+        var service = CreateService(store, new FakeEmbeddingClient(), completion, settings);
+        var conversations = new ConversationStore(settings);
+        var conversation = conversations.Create("tenant", "owner");
+
+        var events = await RunAsync(service, "Question-1", [AppPermissions.AssistantUse], conversation.Turns);
+        var done = Assert.IsType<DoneEvent>(events[^1]);
+        Assert.False(done.Limited);
+        // Only the chunk that actually fit and was sent to the model is a dependency.
+        Assert.Single(done.Sources!);
+        Assert.Equal("doc-1", done.Sources![0].DocumentId);
+
+        conversations.AppendExchange(conversation, "Question-1", "Per [1].", done.Sources!);
+
+        // The follow-up revalidates the saved dependency against the current store. The omitted
+        // chunk [2] is not a dependency and cannot be cited.
+        var events2 = await RunAsync(service, "And next?", [AppPermissions.AssistantUse], conversation.Turns);
+        var done2 = Assert.IsType<DoneEvent>(events2[^1]);
+        Assert.False(done2.Limited);
+        Assert.Contains(done2.Sources!, source => source.DocumentId == "doc-1");
+        Assert.DoesNotContain(done2.Sources!, source => source.DocumentId == "doc-2");
+    }
 }
 
 

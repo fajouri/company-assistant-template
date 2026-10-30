@@ -71,7 +71,7 @@ confirm the selected choice. The request does not enable tools.
 | `Chat__Deployment` | – | Chat model deployment name, e.g. `gpt-4o-mini`. |
 | `Chat__ApiVersion` | `2024-02-01` | Provider API version. |
 | `Chat__MaxContextChunks` | `4` | Retrieved chunks included in the prompt. |
-| `Chat__MaxContextChars` | `8000` | Bound on total passage characters. |
+| `Chat__MaxContextChars` | `8000` | Accumulated character budget for the retrieved-passage section placed in the model prompt between `Reference passages:` and `Question:`. It counts, per included chunk, the citation number, brackets, title, document id, version, fixed separators and the chunk content. Chunks are kept in relevance order until the budget is exhausted; chunks that do not fit are omitted, and their content is truncated to the remaining budget. The system prompt, prior conversation turns, the `Reference passages:`/`Question:` wrappers and the user question are not counted. |
 | `Chat__MaxHistoryTurns` | `4` | Prior question/answer turns included from the conversation. |
 | `Chat__MaxQueryLength` | `2000` | Maximum question length. |
 | `Chat__MaxOutputTokens` | `512` | `max_tokens` sent to the model and the streamed character bound. |
