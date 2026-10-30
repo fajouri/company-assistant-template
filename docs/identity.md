@@ -41,7 +41,7 @@ Use a test tenant for setup and verification. Do not use employee names, real id
 
 ## Configure and run locally
 
-Use .NET user secrets for real local values:
+Use .NET user secrets for real local values. The application loads user secrets only when the host environment is `Development`, and a terminal without preconfigured variables defaults to `Production`, where startup fails with `AzureAd:TenantId must be a non-empty tenant GUID` even though the secrets are stored. Set the environment for the local session as shown:
 
 ```powershell
 dotnet user-secrets init --project src/CompanyAssistant.Web
@@ -49,8 +49,14 @@ dotnet user-secrets set "AzureAd:TenantId" "<test-tenant-guid>" --project src/Co
 dotnet user-secrets set "AzureAd:ClientId" "<test-application-guid>" --project src/CompanyAssistant.Web
 dotnet user-secrets set "AzureAd:ClientSecret" "<test-client-secret-value>" --project src/CompanyAssistant.Web
 dotnet dev-certs https --trust
+# Local run only. Without this line the process runs as Production and ignores user secrets.
+$env:ASPNETCORE_ENVIRONMENT = "Development"
 dotnet run --project src/CompanyAssistant.Web --urls "https://localhost:5001"
 ```
+
+`$env:ASPNETCORE_ENVIRONMENT` affects the current PowerShell session only: close the terminal or run `Remove-Item Env:ASPNETCORE_ENVIRONMENT` to return to the default `Production` behavior. Set it only for local runs on your own machine. Docker, CI and production keep their own configuration injected as environment variables; never set `Development` for a deployment, because it also enables the developer exception page and is not needed to read configuration there.
+
+`dotnet user-secrets init` writes a non-secret `UserSecretsId` into `src/CompanyAssistant.Web/CompanyAssistant.Web.csproj` as an uncommitted local change, and the SDK compiles that identifier into the assembly, so build after `init` (plain `dotnet run` rebuilds automatically); a binary built before `init` ignores user secrets. The values stay outside the repository in the user profile (Windows: `%APPDATA%\Microsoft\UserSecrets\<UserSecretsId>\secrets.json`).
 
 Open `https://localhost:5001`. Missing/empty/non-GUID tenant or client IDs, a missing secret, a non-HTTPS authority, or changed callback paths stop startup. Startup cannot prove that a syntactically valid secret is active; Entra rejects an expired or incorrect credential during the real code exchange.
 
