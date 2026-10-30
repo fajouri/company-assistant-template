@@ -352,6 +352,70 @@ public sealed class IngestionServiceTests
 
 
     [Fact]
+    public async Task Future_effective_date_change_with_content_change_retires_previous_version_when_embeddings_fail()
+    {
+        using var temp = new TempDirectory();
+        var path = Path.Combine(temp.Path, "a.md");
+        File.WriteAllText(path, MarkdownFixtures.Policy("a", effectiveDate: "2025-01-01", body: "# One\n\nOriginal body.\n"));
+
+        var store = new FakeIngestionStore();
+        var embeddings = new FakeEmbeddingClient();
+        var service = CreateService(store, embeddings, temp.Path);
+        await service.RunAsync(CancellationToken.None);
+
+        File.WriteAllText(path, MarkdownFixtures.Policy("a", effectiveDate: "2999-01-01", body: "# Two\n\nChanged body.\n"));
+        embeddings.FailOnTexts.Add("Changed");
+        var report = await service.RunAsync(CancellationToken.None);
+
+        Assert.Contains("a", store.FutureEffectiveRetireCalls);
+        Assert.NotNull(store.Documents["a"].DeletedAt);
+        Assert.Equal(new DateOnly(2025, 1, 1), store.Documents["a"].EffectiveDate);
+        Assert.Equal("# One\n\nOriginal body.", store.Documents["a"].Content);
+        Assert.Equal(1, report.Pending);
+    }
+
+    [Fact]
+    public async Task Unconfigured_embeddings_retire_previous_version_on_future_effective_date_change()
+    {
+        using var temp = new TempDirectory();
+        var path = Path.Combine(temp.Path, "a.md");
+        File.WriteAllText(path, MarkdownFixtures.Policy("a", effectiveDate: "2025-01-01", body: "# One\n\nOriginal body.\n"));
+
+        var store = new FakeIngestionStore();
+        await CreateService(store, new FakeEmbeddingClient(), temp.Path).RunAsync(CancellationToken.None);
+
+        File.WriteAllText(path, MarkdownFixtures.Policy("a", effectiveDate: "2999-01-01", body: "# Two\n\nChanged body.\n"));
+        var report = await CreateService(store, new FakeEmbeddingClient(isConfigured: false), temp.Path)
+            .RunAsync(CancellationToken.None);
+
+        Assert.Contains("a", store.FutureEffectiveRetireCalls);
+        Assert.NotNull(store.Documents["a"].DeletedAt);
+        Assert.Equal(1, report.Pending);
+    }
+
+    [Fact]
+    public async Task Past_to_past_date_change_with_content_change_does_not_retire_when_embeddings_fail()
+    {
+        using var temp = new TempDirectory();
+        var path = Path.Combine(temp.Path, "a.md");
+        File.WriteAllText(path, MarkdownFixtures.Policy("a", effectiveDate: "2025-01-01", body: "# One\n\nOriginal body.\n"));
+
+        var store = new FakeIngestionStore();
+        var embeddings = new FakeEmbeddingClient();
+        var service = CreateService(store, embeddings, temp.Path);
+        await service.RunAsync(CancellationToken.None);
+
+        File.WriteAllText(path, MarkdownFixtures.Policy("a", effectiveDate: "2025-02-01", body: "# Two\n\nChanged body.\n"));
+        embeddings.FailOnTexts.Add("Changed");
+        var report = await service.RunAsync(CancellationToken.None);
+
+        Assert.Null(store.Documents["a"].DeletedAt);
+        Assert.Equal(new DateOnly(2025, 1, 1), store.Documents["a"].EffectiveDate);
+        Assert.Equal("# One\n\nOriginal body.", store.Documents["a"].Content);
+        Assert.Equal(1, report.Pending);
+    }
+
+    [Fact]
     public async Task Duplicate_ids_are_rejected_before_any_write_or_embedding()
     {
         using var temp = new TempDirectory();

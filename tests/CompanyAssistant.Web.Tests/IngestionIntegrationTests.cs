@@ -282,6 +282,126 @@ public sealed class IngestionIntegrationTests(PostgresDatabaseFixture fixture)
         Assert.Equal(versionsAfterRecovery, await fixture.CountVersionsAsync("it-recover-restrict"));
     }
 
+    [Fact]
+    public async Task Future_effective_date_change_hides_previous_version_when_embeddings_fail()
+    {
+        await fixture.ResetAsync();
+        using var temp = new TempDirectory();
+        var path = Path.Combine(temp.Path, "a.md");
+        File.WriteAllText(path, MarkdownFixtures.Policy("it-future-date", effectiveDate: "2000-01-01", body: "# One\n\nOriginal body.\n"));
+
+        var embeddings = new FakeEmbeddingClient();
+        await using var store = fixture.CreateIngestionStore();
+        var service = new IngestionService(store, embeddings, new IngestionOptions(temp.Path, 1_048_576, 6000));
+        await service.RunAsync(CancellationToken.None);
+
+        await using var retrieval = fixture.CreateRetrievalStore();
+        Assert.True(await IsSearchableAsync(retrieval, "it-future-date", "# One\n\nOriginal body.", [AccessPolicies.Employee]));
+
+        File.WriteAllText(path, MarkdownFixtures.Policy("it-future-date", effectiveDate: "2999-12-31", body: "# Two\n\nChanged body.\n"));
+        embeddings.FailOnTexts.Add("Changed");
+        var report = await service.RunAsync(CancellationToken.None);
+
+        Assert.Equal(1, report.Pending);
+        Assert.False(await IsSearchableAsync(retrieval, "it-future-date", "# One\n\nOriginal body.", [AccessPolicies.Employee]));
+        Assert.Null(await retrieval.GetSourceDocumentAsync("it-future-date", [AccessPolicies.Employee], CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Future_effective_date_change_hides_previous_version_when_embeddings_unconfigured()
+    {
+        await fixture.ResetAsync();
+        using var temp = new TempDirectory();
+        var path = Path.Combine(temp.Path, "a.md");
+        File.WriteAllText(path, MarkdownFixtures.Policy("it-future-noconfig", effectiveDate: "2000-01-01", body: "# One\n\nOriginal body.\n"));
+
+        await using var store = fixture.CreateIngestionStore();
+        await new IngestionService(store, new FakeEmbeddingClient(), new IngestionOptions(temp.Path, 1_048_576, 6000))
+            .RunAsync(CancellationToken.None);
+
+        await using var retrieval = fixture.CreateRetrievalStore();
+        Assert.True(await IsSearchableAsync(retrieval, "it-future-noconfig", "# One\n\nOriginal body.", [AccessPolicies.Employee]));
+
+        File.WriteAllText(path, MarkdownFixtures.Policy("it-future-noconfig", effectiveDate: "2999-12-31", body: "# Two\n\nChanged body.\n"));
+        var report = await new IngestionService(store, new FakeEmbeddingClient(isConfigured: false), new IngestionOptions(temp.Path, 1_048_576, 6000))
+            .RunAsync(CancellationToken.None);
+
+        Assert.Equal(1, report.Pending);
+        Assert.False(await IsSearchableAsync(retrieval, "it-future-noconfig", "# One\n\nOriginal body.", [AccessPolicies.Employee]));
+        Assert.Null(await retrieval.GetSourceDocumentAsync("it-future-noconfig", [AccessPolicies.Employee], CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Future_effective_date_change_recovers_and_stays_idempotent()
+    {
+        await fixture.ResetAsync();
+        using var temp = new TempDirectory();
+        var path = Path.Combine(temp.Path, "a.md");
+        File.WriteAllText(path, MarkdownFixtures.Policy("it-future-recover", effectiveDate: "2000-01-01", body: "# One\n\nOriginal body.\n"));
+
+        var embeddings = new FakeEmbeddingClient();
+        await using var store = fixture.CreateIngestionStore();
+        var service = new IngestionService(store, embeddings, new IngestionOptions(temp.Path, 1_048_576, 6000));
+        await service.RunAsync(CancellationToken.None);
+        var versionsBefore = await fixture.CountVersionsAsync("it-future-recover");
+
+        File.WriteAllText(path, MarkdownFixtures.Policy("it-future-recover", effectiveDate: "2999-12-31", body: "# Two\n\nChanged body.\n"));
+        embeddings.FailOnTexts.Add("Changed");
+        var first = await service.RunAsync(CancellationToken.None);
+        Assert.Equal(1, first.Pending);
+
+        await using (var retrieval = fixture.CreateRetrievalStore())
+            Assert.Null(await retrieval.GetSourceDocumentAsync("it-future-recover", [AccessPolicies.Employee], CancellationToken.None));
+
+        embeddings.FailOnTexts.Clear();
+        var second = await service.RunAsync(CancellationToken.None);
+        Assert.Equal(0, second.Pending);
+        Assert.Equal(versionsBefore + 1, await fixture.CountVersionsAsync("it-future-recover"));
+
+        var stored = await fixture.GetStoredDocumentAsync("it-future-recover");
+        Assert.NotNull(stored);
+        Assert.Equal("# Two\n\nChanged body.", stored.Content);
+        Assert.Equal(new DateOnly(2999, 12, 31), stored.EffectiveDate);
+        Assert.Null(stored.DeletedAt);
+
+        // Still future-dated, so it must not be queryable yet even after a successful index.
+        await using (var retrieval = fixture.CreateRetrievalStore())
+            Assert.Null(await retrieval.GetSourceDocumentAsync("it-future-recover", [AccessPolicies.Employee], CancellationToken.None));
+
+        var third = await service.RunAsync(CancellationToken.None);
+        Assert.Equal(1, third.Unchanged);
+        Assert.Equal(versionsBefore + 1, await fixture.CountVersionsAsync("it-future-recover"));
+    }
+
+    [Fact]
+    public async Task Past_to_past_date_change_keeps_previous_version_queryable_when_embeddings_fail()
+    {
+        await fixture.ResetAsync();
+        using var temp = new TempDirectory();
+        var path = Path.Combine(temp.Path, "a.md");
+        File.WriteAllText(path, MarkdownFixtures.Policy("it-past-past", effectiveDate: "2000-01-01", body: "# One\n\nOriginal body.\n"));
+
+        var embeddings = new FakeEmbeddingClient();
+        await using var store = fixture.CreateIngestionStore();
+        var service = new IngestionService(store, embeddings, new IngestionOptions(temp.Path, 1_048_576, 6000));
+        await service.RunAsync(CancellationToken.None);
+
+        await using var retrieval = fixture.CreateRetrievalStore();
+        Assert.True(await IsSearchableAsync(retrieval, "it-past-past", "# One\n\nOriginal body.", [AccessPolicies.Employee]));
+
+        File.WriteAllText(path, MarkdownFixtures.Policy("it-past-past", effectiveDate: "2001-01-01", body: "# Two\n\nChanged body.\n"));
+        embeddings.FailOnTexts.Add("Changed");
+        var report = await service.RunAsync(CancellationToken.None);
+
+        Assert.Equal(1, report.Pending);
+        Assert.True(await IsSearchableAsync(retrieval, "it-past-past", "# One\n\nOriginal body.", [AccessPolicies.Employee]));
+
+        var source = await retrieval.GetSourceDocumentAsync("it-past-past", [AccessPolicies.Employee], CancellationToken.None);
+        Assert.NotNull(source);
+        Assert.Equal("# One\n\nOriginal body.", source.Content);
+        Assert.Equal(new DateOnly(2000, 1, 1), source.EffectiveDate);
+    }
+
     private static async Task<bool> IsSearchableAsync(
         NpgsqlRetrievalStore retrieval,
         string documentId,

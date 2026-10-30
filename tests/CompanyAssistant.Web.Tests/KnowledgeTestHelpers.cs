@@ -49,8 +49,12 @@ internal sealed class FakeIngestionStore : IIngestionStore
     public List<IngestedDocument> Upserts { get; } = new();
     public List<IngestedDocument> MetadataUpdates { get; } = new();
     public List<string> RetireCalls { get; } = new();
+    public List<string> FutureEffectiveRetireCalls { get; } = new();
     public List<IReadOnlySet<string>> SoftDeleteCalls { get; } = new();
     public Action<IngestedDocument>? OnUpsert { get; set; }
+
+    // Fixed "today" so unit tests never depend on the day they run.
+    public DateOnly Today { get; set; } = new(2025, 6, 15);
 
     public Task<StoredDocument?> GetDocumentAsync(string documentId, CancellationToken ct) =>
         Task.FromResult(Documents.TryGetValue(documentId, out var document) ? document : null);
@@ -89,6 +93,20 @@ internal sealed class FakeIngestionStore : IIngestionStore
         RetireCalls.Add(documentId);
         var existing = Documents[documentId];
         Documents[documentId] = existing with { DeletedAt = DateTimeOffset.UtcNow };
+        return Task.CompletedTask;
+    }
+
+    public Task RetireIfFutureEffectiveAsync(string documentId, DateOnly incomingEffectiveDate, CancellationToken ct)
+    {
+        FutureEffectiveRetireCalls.Add(documentId);
+        if (Documents.TryGetValue(documentId, out var existing)
+            && existing.DeletedAt is null
+            && existing.EffectiveDate <= Today
+            && incomingEffectiveDate > Today)
+        {
+            Documents[documentId] = existing with { DeletedAt = DateTimeOffset.UtcNow };
+        }
+
         return Task.CompletedTask;
     }
 

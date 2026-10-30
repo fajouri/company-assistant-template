@@ -38,7 +38,7 @@ docker compose exec -T web dotnet CompanyAssistant.Web.dll ingest
 
 ## Embeddings
 
-`ingest` applies revocations, access-policy restrictions and deletions first, without depending on the embeddings provider, and indexes content that requires embeddings in a later phase. `/api/search` requires a configurable Foundry/Azure-OpenAI-compatible embeddings deployment:
+`ingest` applies revocations, access-policy restrictions, future-effective-date retirements and deletions first, without depending on the embeddings provider, and indexes content that requires embeddings in a later phase. `/api/search` requires a configurable Foundry/Azure-OpenAI-compatible embeddings deployment:
 
 - `Embeddings__Endpoint` (e.g. `https://your-resource.openai.azure.com`)
 - `Embeddings__ApiKey`
@@ -46,7 +46,7 @@ docker compose exec -T web dotnet CompanyAssistant.Web.dll ingest
 - `Embeddings__ApiVersion` (default `2024-02-01`)
 - `Embeddings__Dimensions` (default `1536`, must match the schema)
 
-The current schema stores `vector(1536)`; changing the dimension requires a new versioned migration. When embeddings are not configured or a request fails, `ingest` still applies revocations, restrictions and deletions, reports the content it could not index, and exits with a non-zero status so the pending content is retried on a later run. New content is never published without its correct embeddings, and a content change never widens access to the previous version. `/api/search` returns 503 when embeddings are not configured. No mock is ever enabled in production.
+The current schema stores `vector(1536)`; changing the dimension requires a new versioned migration. When embeddings are not configured or a request fails, `ingest` still applies revocations, restrictions, future-effective-date retirements and deletions, reports the content it could not index, and exits with a non-zero status so the pending content is retried on a later run. New content is never published without its correct embeddings, and a content change never widens access to the previous version — including when the effective date moves into the future, which retires the still-effective previous version so it cannot stay queryable under its old date. `/api/search` returns 503 when embeddings are not configured. No mock is ever enabled in production.
 
 Compose forwards `EMBEDDINGS__ENDPOINT`, `EMBEDDINGS__API_KEY` and `EMBEDDINGS__DEPLOYMENT` from `.env` to `Embeddings__Endpoint`, `Embeddings__ApiKey` and `Embeddings__Deployment`. They are optional: leave them unset to run the anonymous shell, or set all three to enable the real client; a partial configuration is rejected at startup. `Embeddings__ApiVersion` and `Embeddings__Dimensions` keep their defaults and can be overridden directly in the deployment environment when required.
 

@@ -49,10 +49,11 @@ internal sealed class IngestionService(
         var pending = 0;
         var contentToIndex = new List<(MarkdownFile File, ParsedDocument Parsed)>();
 
-        // Phase 1 — apply revocations, access restrictions and metadata-only updates across
-        // the whole input set without depending on the embeddings provider. Content that still
-        // requires embeddings is collected for phase 2, so a later embedding failure cannot
-        // leave a revoked or restricted previous version queryable.
+        // Phase 1 — apply revocations, access restrictions, future-effective-date retirements and
+        // metadata-only updates across the whole input set without depending on the embeddings
+        // provider. Content that still requires embeddings is collected for phase 2, so a later
+        // embedding failure cannot leave a revoked, restricted or future-dated previous version
+        // queryable.
         foreach (var (file, parsed) in parsedFiles)
         {
             ct.ThrowIfCancellationRequested();
@@ -78,11 +79,17 @@ internal sealed class IngestionService(
             }
 
             // The content changed. If the incoming metadata removes access the previous version
-            // granted (a revocation or a different access policy), retire the previous version
-            // now so it cannot remain queryable under its old approval state or access policy.
+            // granted (a revocation, a different access policy, or an effective date pushed into
+            // the future), retire the previous version now so it cannot remain queryable under its
+            // old approval state, access policy or effective date. The future-date check runs in
+            // PostgreSQL against CURRENT_DATE so it matches the retrieval queries exactly.
             if (existing is not null && RetiresAccess(existing, parsed.Metadata))
             {
                 await store.RetireAsync(existing.DocumentId, ct);
+            }
+            else if (existing is not null && existing.EffectiveDate != parsed.Metadata.EffectiveDate)
+            {
+                await store.RetireIfFutureEffectiveAsync(existing.DocumentId, parsed.Metadata.EffectiveDate, ct);
             }
 
             contentToIndex.Add((file, parsed));

@@ -73,6 +73,28 @@ public sealed class PostgresDatabaseFixture : IAsyncLifetime
         return (int)(long)(await command.ExecuteScalarAsync())!;
     }
 
+    internal async Task<StoredDocumentSnapshot?> GetStoredDocumentAsync(string documentId)
+    {
+        await using var dataSource = NpgsqlDataSource.Create(ConnectionString);
+        await using var connection = await dataSource.OpenConnectionAsync();
+        await using var command = new NpgsqlCommand(
+            "SELECT content, effective_date, deleted_at FROM documents WHERE document_id = $1", connection);
+        command.Parameters.AddWithValue(documentId);
+        await using var reader = await command.ExecuteReaderAsync();
+        if (!await reader.ReadAsync())
+            return null;
+
+        return new StoredDocumentSnapshot(
+            reader.GetString(0),
+            reader.GetFieldValue<DateOnly>(1),
+            reader.IsDBNull(2) ? null : reader.GetFieldValue<DateTimeOffset>(2));
+    }
+
+    internal sealed record StoredDocumentSnapshot(
+        string Content,
+        DateOnly EffectiveDate,
+        DateTimeOffset? DeletedAt);
+
     internal NpgsqlRetrievalStore CreateRetrievalStore() => new(DatabaseSettings);
 
     internal NpgsqlIngestionStore CreateIngestionStore() => new(DatabaseSettings);

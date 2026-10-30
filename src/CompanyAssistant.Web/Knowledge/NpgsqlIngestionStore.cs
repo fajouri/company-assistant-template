@@ -188,6 +188,29 @@ internal sealed class NpgsqlIngestionStore : IIngestionStore, IAsyncDisposable
         await transaction.CommitAsync(ct);
     }
 
+    public async Task RetireIfFutureEffectiveAsync(string documentId, DateOnly incomingEffectiveDate, CancellationToken ct)
+    {
+        await using var connection = await _dataSource.Value.OpenConnectionAsync(ct);
+        await using var transaction = await connection.BeginTransactionAsync(ct);
+        await SetRoleAsync(connection, transaction, _role, ct);
+
+        // The date comparison runs in PostgreSQL against CURRENT_DATE so it uses exactly the
+        // same "today" reference as the retrieval queries (effective_date <= CURRENT_DATE).
+        // Retire only when the previous version is currently effective and the incoming date
+        // is still in the future; otherwise the previous version is already hidden (or the
+        // incoming date does not remove access) and no retirement is required.
+        await using var command = new NpgsqlCommand(
+            "UPDATE documents SET deleted_at = now(), updated_at = now() " +
+            "WHERE document_id = $1 AND deleted_at IS NULL " +
+            "AND effective_date <= CURRENT_DATE AND $2 > CURRENT_DATE",
+            connection, transaction);
+        command.Parameters.AddWithValue(documentId);
+        command.Parameters.AddWithValue(incomingEffectiveDate);
+        await command.ExecuteNonQueryAsync(ct);
+
+        await transaction.CommitAsync(ct);
+    }
+
     public async Task<int> SoftDeleteMissingAsync(IReadOnlySet<string> seenSourcePaths, CancellationToken ct)
     {
         await using var connection = await _dataSource.Value.OpenConnectionAsync(ct);
