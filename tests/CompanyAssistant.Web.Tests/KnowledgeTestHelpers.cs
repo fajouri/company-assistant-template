@@ -9,10 +9,12 @@ internal sealed class FakeEmbeddingClient(int dimensions = 1536, bool isConfigur
     public HashSet<string> FailOnTexts { get; } = new(StringComparer.Ordinal);
 
     public int EmbedCallCount { get; private set; }
+    public IReadOnlyList<string> LastTexts { get; private set; } = [];
 
     public Task<IReadOnlyList<float[]>> EmbedAsync(IReadOnlyList<string> texts, CancellationToken ct)
     {
         EmbedCallCount++;
+        LastTexts = texts;
         if (!IsConfigured)
             throw new InvalidOperationException("Embeddings are not configured.");
         if (texts.Any(text => FailOnTexts.Any(marker => text.Contains(marker, StringComparison.Ordinal))))
@@ -149,6 +151,12 @@ internal sealed class FakeRetrievalStore : IRetrievalStore
     public List<(SourceDocument Document, string Policy)> Sources { get; } = new();
     public List<IReadOnlyCollection<string>> SearchPolicyCalls { get; } = new();
     public List<IReadOnlyCollection<string>> SourcePolicyCalls { get; } = new();
+
+    public Task<IReadOnlyList<RetrievedChunk>> GetAuthorizedChunksAsync(
+        IReadOnlyCollection<long> chunkIds, IReadOnlyCollection<string> allowedPolicies, CancellationToken ct) =>
+        Task.FromResult<IReadOnlyList<RetrievedChunk>>(Chunks
+            .Where(entry => chunkIds.Contains(entry.Chunk.ChunkId) && allowedPolicies.Contains(entry.Policy))
+            .Select(entry => entry.Chunk).ToList());
 
     public Task<IReadOnlyList<RetrievedChunk>> SearchAsync(
         float[] queryEmbedding,

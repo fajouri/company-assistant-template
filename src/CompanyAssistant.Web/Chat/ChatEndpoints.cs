@@ -104,6 +104,7 @@ internal static class ChatEndpoints
         var token = timeoutCts.Token;
 
         var answer = new StringBuilder();
+        DoneEvent? completed = null;
         try
         {
             await foreach (var chatEvent in chat.AnswerAsync(message, new RetrievalCaller(permissions), history, token))
@@ -122,6 +123,7 @@ internal static class ChatEndpoints
                         await WriteEventAsync(context, new { type = "delta", text = delta.Text }, token);
                         break;
                     case DoneEvent done:
+                        completed = done;
                         await WriteEventAsync(context, new
                         {
                             type = "done",
@@ -133,22 +135,41 @@ internal static class ChatEndpoints
                 }
             }
 
-            conversations.Append(conversation, "user", message);
-            if (answer.Length > 0)
-                conversations.Append(conversation, "assistant", answer.ToString());
+            if (completed is null)
+                throw new ChatUnavailableException("Chat stream ended before completion.");
+            if (!completed.Limited && answer.Length > 0 && completed.Sources is { Count: > 0 })
+            {
+                conversations.Append(conversation, "user", message);
+                conversations.Append(conversation, "assistant", answer.ToString(), completed.Sources);
+            }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             // The client aborted the request; there is no response left to write.
         }
+        catch (OperationCanceledException)
+        {
+            await WriteErrorAsync(context, "timeout");
+        }
         catch (Exception)
+        {
+            if (ct.IsCancellationRequested) return;
+            await WriteErrorAsync(context, "provider");
+        }
+    }
+
+    private static async Task WriteErrorAsync(HttpContext context, string code)
+    {
+        try
         {
             await WriteEventAsync(context, new
             {
                 type = "error",
+                code,
                 message = "The assistant service is unavailable. Please try again later."
             }, CancellationToken.None);
         }
+        catch (IOException) { /* Disconnected client. */ }
     }
 
     private static IEnumerable<object> SerializeCitations(IReadOnlyList<ChatCitation> citations) =>

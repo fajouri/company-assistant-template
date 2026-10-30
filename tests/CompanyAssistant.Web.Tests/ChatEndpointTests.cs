@@ -95,7 +95,7 @@ public sealed class ChatEndpointTests
     {
         using var factory = new ChatTestFactory();
         Seed(factory);
-        factory.ChatCompletion.Deltas.AddRange(["You get ", "25 days."]);
+        factory.ChatCompletion.Deltas.AddRange(["You get ", "25 days [1]."]);
         using var client = CreateClient(factory);
         var token = await AntiforgeryTokenAsync(client, "Employee");
 
@@ -118,7 +118,7 @@ public sealed class ChatEndpointTests
         var deltaText = string.Concat(events
             .Where(e => e.GetProperty("type").GetString() == "delta")
             .Select(e => e.GetProperty("text").GetString()));
-        Assert.Equal("You get 25 days.", deltaText);
+        Assert.Equal("You get 25 days [1].", deltaText);
     }
     [Fact]
     public async Task Employee_does_not_receive_hr_citations()
@@ -143,7 +143,7 @@ public sealed class ChatEndpointTests
     {
         using var factory = new ChatTestFactory();
         Seed(factory);
-        factory.ChatCompletion.Deltas.Add("ok");
+        factory.ChatCompletion.Deltas.Add("ok [1]");
 
         using var owner = CreateClient(factory);
         var token = await AntiforgeryTokenAsync(owner, "Employee");
@@ -212,6 +212,22 @@ public sealed class ChatEndpointTests
     }
 
     [Fact]
+    public async Task Partial_provider_answer_is_neither_published_nor_saved()
+    {
+        using var factory = new ChatTestFactory();
+        Seed(factory);
+        factory.ChatCompletion.Deltas.Add("Partial answer [1]");
+        factory.ChatCompletion.FailAfterDeltas = true;
+        using var client = CreateClient(factory);
+        var token = await AntiforgeryTokenAsync(client, "Employee");
+        using var response = await ChatAsync(client, "Employee", "How much leave?", token);
+        var events = ParseEvents(await response.Content.ReadAsStringAsync());
+        Assert.Single(events);
+        Assert.Equal("error", events[0].GetProperty("type").GetString());
+        Assert.Equal("provider", events[0].GetProperty("code").GetString());
+    }
+
+    [Fact]
     public async Task Chat_without_configuration_returns_503()
     {
         using var factory = new ChatTestFactory(configureChat: false);
@@ -221,6 +237,46 @@ public sealed class ChatEndpointTests
 
         using var response = await ChatAsync(client, "Employee", "How much leave?", token);
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("valid", true)]
+    [InlineData("acl", false)]
+    [InlineData("revoked", false)]
+    [InlineData("deleted", false)]
+    [InlineData("content", false)]
+    [InlineData("version", false)]
+    public async Task History_is_reused_only_while_every_source_is_current_and_authorized(string change, bool retained)
+    {
+        using var factory = new ChatTestFactory();
+        Seed(factory);
+        factory.ChatCompletion.Deltas.Add("Old answer [1].");
+        using var client = CreateClient(factory);
+        var token = await AntiforgeryTokenAsync(client, "Employee");
+        using var first = await ChatAsync(client, "Employee", "How much leave?", token);
+        var id = ParseEvents(await first.Content.ReadAsStringAsync())
+            .Single(e => e.GetProperty("type").GetString() == "done")
+            .GetProperty("conversationId").GetString();
+
+        var original = factory.RetrievalStore.Chunks[0];
+        if (change == "acl") factory.RetrievalStore.Chunks[0] = (original.Chunk, AccessPolicies.Hr);
+        if (change == "revoked" || change == "deleted") factory.RetrievalStore.Chunks.RemoveAt(0);
+        if (change == "content") factory.RetrievalStore.Chunks[0] = (original.Chunk with { Content = "New body" }, original.Policy);
+        if (change == "version") factory.RetrievalStore.Chunks[0] = (original.Chunk with { Version = "2.0" }, original.Policy);
+        if (change == "acl" || change == "revoked" || change == "deleted")
+            factory.RetrievalStore.Chunks.Add((
+                FakeRetrievalStore.ChunkFor("other", "Other", "Other body", AccessPolicies.Employee) with { ChunkId = 2 },
+                AccessPolicies.Employee));
+
+        factory.ChatCompletion.Deltas.Clear();
+        factory.ChatCompletion.Deltas.Add("New answer [1].");
+        using var second = await ChatAsync(client, "Employee", "And how many days?", token, id);
+        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
+        var prompt = factory.ChatCompletion.LastHistory;
+        Assert.NotNull(prompt);
+        Assert.Equal(retained, prompt.Any(item => item.Content == "Old answer [1]."));
+        Assert.Equal(retained, prompt.Any(item => item.Content == "How much leave?"));
+        Assert.Equal(retained, factory.Embeddings.LastTexts.Single().Contains("How much leave?", StringComparison.Ordinal));
     }
 }
 

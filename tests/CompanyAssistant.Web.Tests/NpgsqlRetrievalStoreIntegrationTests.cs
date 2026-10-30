@@ -1,4 +1,5 @@
 using CompanyAssistant.Web.Knowledge;
+using Npgsql;
 
 namespace CompanyAssistant.Web.Tests;
 
@@ -129,12 +130,52 @@ public sealed class NpgsqlRetrievalStoreIntegrationTests(PostgresDatabaseFixture
         Assert.Null(await store.GetSourceDocumentAsync("it-future", [AccessPolicies.Employee], CancellationToken.None));
     }
 
+    [Fact]
+    public async Task Authorized_chunk_recheck_uses_current_document_state()
+    {
+        await fixture.ResetAsync();
+        await SeedAsync("it-current", "Current body", AccessPolicies.Employee);
+        await using var store = fixture.CreateRetrievalStore();
+        var initial = await store.SearchAsync(FakeEmbeddingClient.VectorFor("Current body"),
+            [AccessPolicies.Employee], 1, CancellationToken.None);
+        var id = Assert.Single(initial).ChunkId;
+        Assert.Single(await store.GetAuthorizedChunksAsync([id], [AccessPolicies.Employee], CancellationToken.None));
+
+        await using (var connection = new NpgsqlConnection(fixture.ConnectionString))
+        {
+            await connection.OpenAsync();
+            await using var command = new NpgsqlCommand(
+                "UPDATE documents SET access_policy = 'hr' WHERE document_id = 'it-current'", connection);
+            await command.ExecuteNonQueryAsync();
+        }
+        Assert.Empty(await store.GetAuthorizedChunksAsync([id], [AccessPolicies.Employee], CancellationToken.None));
+        Assert.Single(await store.GetAuthorizedChunksAsync([id], [AccessPolicies.Hr], CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Cosine_distance_distinguishes_relevant_and_irrelevant_authorized_chunks()
+    {
+        await fixture.ResetAsync();
+        var first = new float[1536];
+        first[0] = 1;
+        var other = new float[1536];
+        other[1] = 1;
+        await SeedAsync("it-relevant", "Relevant body", AccessPolicies.Employee, embedding: first);
+        await SeedAsync("it-irrelevant", "Unrelated body", AccessPolicies.Employee, embedding: other);
+        await using var store = fixture.CreateRetrievalStore();
+        var results = await store.SearchAsync(first, [AccessPolicies.Employee], 2, CancellationToken.None);
+        Assert.Equal("it-relevant", results[0].DocumentId);
+        Assert.True(results[0].Distance <= 0.35);
+        Assert.True(results[1].Distance > 0.35);
+    }
+
     private async Task SeedAsync(
         string documentId,
         string content,
         string accessPolicy,
         string approvalState = ApprovalStates.Approved,
-        DateOnly? effectiveDate = null)
+        DateOnly? effectiveDate = null,
+        float[]? embedding = null)
     {
         var metadata = new PolicyMetadata(
             documentId,
@@ -147,7 +188,7 @@ public sealed class NpgsqlRetrievalStoreIntegrationTests(PostgresDatabaseFixture
             approvalState,
             accessPolicy);
 
-        var embedding = FakeEmbeddingClient.VectorFor(content);
+        embedding ??= FakeEmbeddingClient.VectorFor(content);
         var chunks = new List<IngestedChunk>
         {
             new(null, content, Hashing.Sha256Hex(content), embedding)

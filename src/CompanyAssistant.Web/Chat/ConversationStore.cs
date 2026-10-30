@@ -47,9 +47,9 @@ internal sealed class ConversationStore(ChatSettings settings)
         return conversation;
     }
 
-    public void Append(Conversation conversation, string role, string text)
+    public void Append(Conversation conversation, string role, string text, IReadOnlyList<SourceStamp>? sources = null)
     {
-        conversation.Append(role, text, settings.MaxHistoryTurns);
+        conversation.Append(role, text, settings.MaxHistoryTurns, sources);
     }
 }
 
@@ -72,7 +72,7 @@ internal sealed class Conversation
         }
     }
 
-    public void Append(string role, string text, int maxHistoryTurns)
+    public void Append(string role, string text, int maxHistoryTurns, IReadOnlyList<SourceStamp>? sources = null)
     {
         var bounded = text.Length <= ConversationTurn.MaxTurnChars
             ? text
@@ -80,7 +80,7 @@ internal sealed class Conversation
 
         lock (_turns)
         {
-            _turns.Add(new ConversationTurn(role, bounded));
+            _turns.Add(new ConversationTurn(role, bounded, sources));
             var maxEntries = maxHistoryTurns * 2;
             while (_turns.Count > maxEntries)
                 _turns.RemoveAt(0);

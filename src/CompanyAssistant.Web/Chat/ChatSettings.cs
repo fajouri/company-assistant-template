@@ -13,6 +13,8 @@ internal sealed record ChatSettings(
     int TimeoutSeconds,
     int RequestsPerMinute)
 {
+    // Cosine distance from pgvector (<=>); deployment-specific calibration is required.
+    public double MaxEvidenceDistance { get; init; } = 0.35;
     public const int DefaultMaxContextChunks = 4;
     public const int DefaultMaxContextChars = 8_000;
     public const int DefaultMaxHistoryTurns = 4;
@@ -63,7 +65,21 @@ internal sealed record ChatSettings(
             ReadBoundedInt(section, "MaxQueryLength", DefaultMaxQueryLength, 1, 100_000),
             ReadBoundedInt(section, "MaxOutputTokens", DefaultMaxOutputTokens, 16, 16_384),
             ReadBoundedInt(section, "TimeoutSeconds", DefaultTimeoutSeconds, 5, 600),
-            ReadBoundedInt(section, "RequestsPerMinute", DefaultRequestsPerMinute, 1, 10_000));
+            ReadBoundedInt(section, "RequestsPerMinute", DefaultRequestsPerMinute, 1, 10_000))
+        {
+            MaxEvidenceDistance = ReadDistance(section)
+        };
+    }
+
+    private static double ReadDistance(IConfigurationSection section)
+    {
+        var value = section["MaxEvidenceDistance"];
+        if (string.IsNullOrWhiteSpace(value)) return 0.35;
+        if (!double.TryParse(value, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var distance)
+            || !double.IsFinite(distance) || distance < 0 || distance > 2)
+            throw new InvalidOperationException("Chat:MaxEvidenceDistance must be between 0 and 2.");
+        return distance;
     }
 
     private static int ReadBoundedInt(IConfigurationSection section, string key, int fallback, int min, int max)

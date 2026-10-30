@@ -69,4 +69,13 @@ public sealed class ChatSettingsTests
         Assert.True(settings.IsConfigured);
         Assert.Equal("https://chat.invalid", settings.Endpoint);
     }
+
+    [Fact]
+    public void Evidence_distance_is_configurable_and_bounded()
+    {
+        var configured = Load(("Chat:MaxEvidenceDistance", "0.42"));
+        Assert.Equal(0.42, configured.MaxEvidenceDistance);
+        Assert.Throws<InvalidOperationException>(() => Load(("Chat:MaxEvidenceDistance", "NaN")));
+        Assert.Throws<InvalidOperationException>(() => Load(("Chat:MaxEvidenceDistance", "2.1")));
+    }
 }

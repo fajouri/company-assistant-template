@@ -11,6 +11,7 @@ internal sealed class FakeChatCompletionService : IChatCompletionService
 
     public List<string> Deltas { get; } = new();
     public bool Fail { get; set; }
+    public bool FailAfterDeltas { get; set; }
     public ChatHistory? LastHistory { get; private set; }
     public int StreamingCallCount { get; private set; }
 
@@ -41,5 +42,7 @@ internal sealed class FakeChatCompletionService : IChatCompletionService
             cancellationToken.ThrowIfCancellationRequested();
             yield return new StreamingChatMessageContent(AuthorRole.Assistant, delta);
         }
+        if (FailAfterDeltas)
+            throw new ChatUnavailableException("Forced failure after deltas.");
     }
 }

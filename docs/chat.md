@@ -3,7 +3,7 @@
 The assistant answers questions with grounded citations. It uses Semantic Kernel's chat
 abstraction (`Microsoft.SemanticKernel.Core`) over a configurable Foundry/Azure-OpenAI-
 compatible chat deployment. The normal path is deterministic: authorize the caller, retrieve
-their allowed passages, run one bounded model generation, and stream the answer. There are no
+their allowed passages, run one bounded model generation, validate references, and return the answer. There are no
 agents, no planning and no tools.
 
 ## Endpoint
@@ -21,17 +21,26 @@ ACL-filtered chunks.
 
 ## Streaming protocol
 
-The response is `application/x-ndjson`, one JSON object per line, flushed incrementally:
+The response is `application/x-ndjson`, one JSON object per line:
 
 1. `{"type":"sources","citations":[{"index":1,"chunkId":...,"documentId":"leave-policy","title":"...","version":"1.0"}]}`
-2. `{"type":"delta","text":"..."}` (repeated)
+2. `{"type":"delta","text":"..."}` (the validated complete answer)
 3. `{"type":"done","conversationId":"...","limited":false,"citations":[...]}`
 
-On provider/internal failure the stream ends with `{"type":"error","message":"..."}` containing
+`sources` and `done.citations` contain only passages referenced by valid `[n]` markers in the
+completed model text, never all retrieval candidates. The service holds the bounded answer
+until the provider's `[DONE]` marker arrives and references can be checked across deltas. This
+delays answer display until completion; the request remains abortable. A response with missing
+or unknown references is limited and contains no answer. Citation-number validation cannot
+prove that each factual claim is semantically supported by its cited passage.
+
+On provider/internal failure the stream ends with `{"type":"error","code":"provider","message":"..."}` containing
 only a generic, non-leaking message. When retrieval returns no permitted passage the stream is
 `{"type":"sources","citations":[]}` followed by `{"type":"done","limited":true,...}` and no
 model call; the UI renders a localized HR-referral notice. The response is `no-store`, and the
-client may abort the request at any time.
+client may abort the request at any time. The client requires exactly one terminal `done` or
+`error` event; EOF without one is an error.
+Server timeouts use error code `timeout`; user aborts stop the request without a terminal event.
 
 ## Configuration
 
@@ -48,6 +57,7 @@ client may abort the request at any time.
 | `Chat__MaxOutputTokens` | `512` | `max_tokens` sent to the model and the streamed character bound. |
 | `Chat__TimeoutSeconds` | `30` | Per-request timeout (retrieval + generation). |
 | `Chat__RequestsPerMinute` | `10` | Sliding-window rate limit per authenticated user. |
+| `Chat__MaxEvidenceDistance` | `0.35` | Maximum pgvector cosine distance (`<=>`) for a chat passage, in the range 0–2. |
 
 Setting any of `Endpoint`, `ApiKey` or `Deployment` requires all three; a partial configuration
 is rejected at startup. Unset chat configuration keeps the anonymous shell runnable and makes
@@ -65,8 +75,21 @@ passages are placed in a separate user message, each prefixed with its index, ti
 id and version, so document text can never be mistaken for an instruction.
 
 Citations are bound to server-retrieved `document_chunks.chunk_id`, `documents.document_id` and
-`documents.version`. The server returns only the citations it retrieved through the existing
-ACL-filtered store; unknown or client-supplied citations are never accepted or returned.
+`documents.version`. The server returns only referenced citations from the existing ACL-filtered
+store. It rechecks every passage that could have influenced a prior answer by chunk id, document
+id, version and content hash under the caller's current permissions before reusing that exchange.
+Unverifiable exchanges are omitted from the model prompt. This covers database changes to ACL,
+approval, effective date, deletion, version and chunk content. It does not detect changes to a
+source file until ingestion updates the database. Short follow-ups (at most 80 characters,
+beginning with a small set of follow-up phrases such as “¿y…?” or “and…”) add the last verified
+user question to the retrieval query, without adding a model call or a prior answer. Other
+phrasing and ambiguous follow-ups may still retrieve the wrong topic.
+
+Chat filters retrieved passages by cosine distance after the authorization-aware SQL search;
+the retrieval API itself is unchanged. `0.35` is a starting bound, not a measure of answer
+accuracy. Calibrate it with representative approved questions, unrelated questions, the chosen
+embedding deployment and the evaluation set; inspect false positives and false negatives before
+using it with real data. Changing embedding models requires recalibration.
 
 ## Conversations, ownership and retention
 

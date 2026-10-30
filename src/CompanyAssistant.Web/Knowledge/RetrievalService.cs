@@ -2,6 +2,10 @@ namespace CompanyAssistant.Web.Knowledge;
 
 internal sealed class RetrievalService(IRetrievalStore store)
 {
+    public Task<IReadOnlyList<RetrievedChunk>> GetAuthorizedChunksAsync(
+        IReadOnlyCollection<long> chunkIds, RetrievalCaller caller, CancellationToken ct) =>
+        store.GetAuthorizedChunksAsync(chunkIds, AccessPolicyMapping.AllowedFor(caller.Permissions), ct);
+
     public Task<IReadOnlyList<RetrievedChunk>> SearchAsync(
         float[] queryEmbedding,
         RetrievalCaller caller,

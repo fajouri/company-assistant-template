@@ -7,7 +7,9 @@ internal sealed record ChatRequest(string? Message, string? ConversationId);
 
 internal sealed record ChatCitation(int Index, long ChunkId, string DocumentId, string Title, string Version);
 
-internal sealed record ConversationTurn(string Role, string Text)
+internal sealed record SourceStamp(long ChunkId, string DocumentId, string Title, string Version, string ContentHash);
+
+internal sealed record ConversationTurn(string Role, string Text, IReadOnlyList<SourceStamp>? Sources = null)
 {
     public const int MaxTurnChars = 2_000;
 }
@@ -18,6 +20,6 @@ internal sealed record SourcesEvent(IReadOnlyList<ChatCitation> Citations) : Cha
 
 internal sealed record DeltaEvent(string Text) : ChatEvent;
 
-internal sealed record DoneEvent(bool Limited, IReadOnlyList<ChatCitation> Citations) : ChatEvent;
+internal sealed record DoneEvent(bool Limited, IReadOnlyList<ChatCitation> Citations, IReadOnlyList<SourceStamp>? Sources = null) : ChatEvent;
 
 internal sealed class ChatUnavailableException(string message) : Exception(message);

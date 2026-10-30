@@ -64,6 +64,8 @@ internal sealed class FoundryChatCompletionService(ChatSettings settings, HttpCl
             if (!string.IsNullOrEmpty(text))
                 yield return new StreamingChatMessageContent(AuthorRole.Assistant, text);
         }
+
+        throw new ChatUnavailableException("Chat stream ended before completion.");
     }
 
     private void EnsureConfigured()

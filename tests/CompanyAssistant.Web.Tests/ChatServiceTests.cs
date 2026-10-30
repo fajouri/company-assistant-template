@@ -39,7 +39,7 @@ public sealed class ChatServiceTests
         var store = new FakeRetrievalStore();
         store.Chunks.Add((FakeRetrievalStore.ChunkFor("leave", "Leave policy", "Leave body", AccessPolicies.Employee), AccessPolicies.Employee));
         store.Chunks.Add((FakeRetrievalStore.ChunkFor("hr", "HR contacts", "HR body", AccessPolicies.Hr), AccessPolicies.Hr));
-        var completion = new FakeChatCompletionService { Deltas = { "You get 25 days." } };
+        var completion = new FakeChatCompletionService { Deltas = { "You get 25 days [1]." } };
         var service = CreateService(store, new FakeEmbeddingClient(), completion);
 
         var events = await RunAsync(service, "How much leave?", [AppPermissions.AssistantUse]);
@@ -117,13 +117,15 @@ public sealed class ChatServiceTests
         for (var i = 0; i < 6; i++)
             store.Chunks.Add((FakeRetrievalStore.ChunkFor($"doc-{i}", $"Policy {i}", $"Body {i}", AccessPolicies.Employee), AccessPolicies.Employee));
 
-        var completion = new FakeChatCompletionService { Deltas = { "answer" } };
+        var completion = new FakeChatCompletionService { Deltas = { "answer [1]" } };
         var service = CreateService(store, new FakeEmbeddingClient(), completion, Settings(maxContextChunks: 3));
 
         var events = await RunAsync(service, "policies?", [AppPermissions.AssistantUse]);
 
         var sources = Assert.IsType<SourcesEvent>(events[0]);
-        Assert.Equal(3, sources.Citations.Count);
+        Assert.Single(sources.Citations);
+        Assert.Contains("doc-2", completion.LastHistory![^1].Content);
+        Assert.DoesNotContain("doc-3", completion.LastHistory[^1].Content);
     }
 
     [Fact]
@@ -143,6 +145,46 @@ public sealed class ChatServiceTests
 
         Assert.DoesNotContain("chat.invalid", exception.Message, StringComparison.Ordinal);
         Assert.DoesNotContain("fictional-test-key", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("Answer [1].", false, 1)]
+    [InlineData("Answer [99].", true, 0)]
+    [InlineData("Answer without reference.", true, 0)]
+    public async Task Only_existing_model_references_are_published(string output, bool limited, int count)
+    {
+        var store = new FakeRetrievalStore();
+        store.Chunks.Add((FakeRetrievalStore.ChunkFor("leave", "Leave", "Body", AccessPolicies.Employee), AccessPolicies.Employee));
+        var completion = new FakeChatCompletionService { Deltas = { output } };
+        var events = await RunAsync(CreateService(store, new FakeEmbeddingClient(), completion),
+            "Question mentions [99]", [AppPermissions.AssistantUse]);
+        Assert.Equal(count, Assert.IsType<SourcesEvent>(events[0]).Citations.Count);
+        Assert.Equal(limited, Assert.IsType<DoneEvent>(events[^1]).Limited);
+        Assert.Equal(limited ? 0 : 1, events.OfType<DeltaEvent>().Count());
+    }
+
+    [Fact]
+    public async Task Split_reference_is_validated_after_all_deltas()
+    {
+        var store = new FakeRetrievalStore();
+        store.Chunks.Add((FakeRetrievalStore.ChunkFor("leave", "Leave", "Body", AccessPolicies.Employee), AccessPolicies.Employee));
+        var completion = new FakeChatCompletionService { Deltas = { "Answer [", "1]." } };
+        var events = await RunAsync(CreateService(store, new FakeEmbeddingClient(), completion),
+            "Question", [AppPermissions.AssistantUse]);
+        Assert.False(Assert.IsType<DoneEvent>(events[^1]).Limited);
+        Assert.Equal("Answer [1].", Assert.Single(events.OfType<DeltaEvent>()).Text);
+    }
+
+    [Fact]
+    public async Task Irrelevant_authorized_neighbor_does_not_call_chat_model()
+    {
+        var store = new FakeRetrievalStore();
+        store.Chunks.Add((FakeRetrievalStore.ChunkFor("leave", "Leave", "Body", AccessPolicies.Employee) with { Distance = 0.8 }, AccessPolicies.Employee));
+        var completion = new FakeChatCompletionService { Deltas = { "Answer [1]" } };
+        var events = await RunAsync(CreateService(store, new FakeEmbeddingClient(), completion),
+            "Unrelated", [AppPermissions.AssistantUse]);
+        Assert.True(Assert.IsType<DoneEvent>(events[^1]).Limited);
+        Assert.Equal(0, completion.StreamingCallCount);
     }
 
     [Fact]

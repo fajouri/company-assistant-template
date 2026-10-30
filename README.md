@@ -9,7 +9,7 @@ Requires Docker Engine with Compose.
 3. Open http://localhost:8080.
 4. Stop with `docker compose down`. Database data persists; do not use `-v` unless you intend to delete it.
 
-The interface is an authenticated policy assistant. Entra sign-in, a current-user session, authorization policies, permission-aware policy ingestion and retrieval, and grounded streaming chat with citations are implemented. Chat and embeddings are configurable and remain disabled until their deployments are supplied. The local interface displays fictional data only. Do not deploy publicly or load company documents yet. Real sign-in requires HTTPS and the [identity setup](docs/identity.md); the loopback HTTP Compose URL is only for the anonymous shell and smoke checks.
+The interface is an authenticated policy assistant. Entra sign-in, a current-user session, authorization policies, permission-aware policy ingestion and retrieval, and grounded chat with validated citation references are implemented. Chat and embeddings are configurable and remain disabled until their deployments are supplied. The local interface displays fictional data only. Do not deploy publicly or load company documents yet. Real sign-in requires HTTPS and the [identity setup](docs/identity.md); the loopback HTTP Compose URL is only for the anonymous shell and smoke checks.
 
 ## Development
 Node 22+; .NET 10 SDK.

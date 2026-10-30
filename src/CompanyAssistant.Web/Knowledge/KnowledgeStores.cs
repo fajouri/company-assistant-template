@@ -30,6 +30,11 @@ internal interface IIngestionStore
 
 internal interface IRetrievalStore
 {
+    Task<IReadOnlyList<RetrievedChunk>> GetAuthorizedChunksAsync(
+        IReadOnlyCollection<long> chunkIds,
+        IReadOnlyCollection<string> allowedPolicies,
+        CancellationToken ct);
+
     Task<IReadOnlyList<RetrievedChunk>> SearchAsync(
         float[] queryEmbedding,
         IReadOnlyCollection<string> allowedPolicies,

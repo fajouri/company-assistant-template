@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Text;
+using System.Text.RegularExpressions;
 using CompanyAssistant.Web.Knowledge;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
@@ -32,8 +33,16 @@ internal sealed class ChatService(
         IReadOnlyList<ConversationTurn> history,
         [EnumeratorCancellation] CancellationToken ct)
     {
-        var embedding = (await embeddings.EmbedAsync([message], ct))[0];
-        var chunks = await retrieval.SearchAsync(embedding, caller, settings.MaxContextChunks, ct);
+        var safeHistory = await ValidateHistoryAsync(history, caller, ct);
+        // A short follow-up can carry the last verified question into retrieval without
+        // sending prior answers or adding another model call.
+        var searchText = IsFollowUp(message) && safeHistory.Count >= 2
+            ? safeHistory[^2].Text + "\n" + message
+            : message;
+        var embedding = (await embeddings.EmbedAsync([searchText], ct))[0];
+        var chunks = (await retrieval.SearchAsync(embedding, caller, settings.MaxContextChunks, ct))
+            .Where(chunk => double.IsFinite(chunk.Distance) && chunk.Distance <= settings.MaxEvidenceDistance)
+            .ToList();
 
         var citations = chunks
             .Select((chunk, index) => new ChatCitation(
@@ -46,31 +55,70 @@ internal sealed class ChatService(
 
         if (chunks.Count == 0)
         {
-            yield return new SourcesEvent(citations);
-            yield return new DoneEvent(Limited: true, citations);
+            yield return new SourcesEvent([]);
+            yield return new DoneEvent(Limited: true, []);
             yield break;
         }
 
-        yield return new SourcesEvent(citations);
-
-        var chatHistory = BuildHistory(message, chunks, history);
+        var chatHistory = BuildHistory(message, chunks, safeHistory);
         var maxOutputChars = settings.MaxOutputTokens * 4;
         var answer = new StringBuilder();
 
         await foreach (var delta in chatCompletion.GetStreamingChatMessageContentsAsync(chatHistory, null, null, ct))
         {
             var text = delta.Content ?? string.Empty;
-            if (answer.Length >= maxOutputChars)
-                break;
-
             if (answer.Length + text.Length > maxOutputChars)
-                text = text[..(maxOutputChars - answer.Length)];
+                throw new ChatUnavailableException("Chat output exceeded its configured bound.");
 
             answer.Append(text);
-            yield return new DeltaEvent(text);
         }
 
-        yield return new DoneEvent(Limited: false, citations);
+        // Validate the complete model output, including references split across deltas.
+        // Withhold it until provider completion so a partial or uncited answer is never shown.
+        var matches = Regex.Matches(answer.ToString(), @"\[(\d+)\]");
+        var used = matches.Select(match => int.TryParse(match.Groups[1].Value, out var index) ? index : -1)
+            .Distinct().ToHashSet();
+        if (used.Count == 0 || used.Any(index => index < 1 || index > citations.Count))
+        {
+            yield return new SourcesEvent([]);
+            yield return new DoneEvent(Limited: true, []);
+            yield break;
+        }
+
+        var cited = citations.Where(citation => used.Contains(citation.Index)).ToList();
+        yield return new SourcesEvent(cited);
+        yield return new DeltaEvent(answer.ToString());
+        yield return new DoneEvent(Limited: false, cited,
+            chunks.Select(chunk => new SourceStamp(chunk.ChunkId, chunk.DocumentId, chunk.Title, chunk.Version,
+                    Hashing.Sha256Hex(chunk.Content))).ToList());
+    }
+
+    private static bool IsFollowUp(string message) => message.Length <= 80 &&
+        Regex.IsMatch(message, @"^\s*(?:¿?\s*y\b|and\b|what about\b|how about\b|¿?\s*cu[aá]ntos?\b)",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private async Task<IReadOnlyList<ConversationTurn>> ValidateHistoryAsync(
+        IReadOnlyList<ConversationTurn> history, RetrievalCaller caller, CancellationToken ct)
+    {
+        var safe = new List<ConversationTurn>();
+        for (var i = 0; i + 1 < history.Count; i += 2)
+        {
+            var question = history[i];
+            var answer = history[i + 1];
+            if (question.Role != "user" || answer.Role != "assistant" || answer.Sources is not { Count: > 0 })
+                continue;
+            var ids = answer.Sources.Select(source => source.ChunkId).Distinct().ToArray();
+            var current = await retrieval.GetAuthorizedChunksAsync(ids, caller, ct);
+            if (answer.Sources.All(source => current.Any(chunk =>
+                chunk.ChunkId == source.ChunkId && chunk.DocumentId == source.DocumentId
+                && chunk.Title == source.Title
+                && chunk.Version == source.Version && Hashing.Sha256Hex(chunk.Content) == source.ContentHash)))
+            {
+                safe.Add(question);
+                safe.Add(answer);
+            }
+        }
+        return safe;
     }
 
     private ChatHistory BuildHistory(

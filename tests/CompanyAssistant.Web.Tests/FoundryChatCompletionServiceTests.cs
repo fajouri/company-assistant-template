@@ -80,6 +80,37 @@ public sealed class FoundryChatCompletionServiceTests
         Assert.DoesNotContain("chat.invalid", exception.Message, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n")]
+    [InlineData("data: {\"choices\":[{\"delta\":{\"content\":\"one\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\" two\"}}]}\n\n")]
+    public async Task Missing_done_marker_throws_after_partial_deltas(string data)
+    {
+        var handler = new StubHandler
+        {
+            Response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(data, Encoding.UTF8, "text/event-stream")
+            }
+        };
+        var service = CreateService(handler);
+        await Assert.ThrowsAsync<ChatUnavailableException>(async () =>
+        {
+            await foreach (var _ in service.GetStreamingChatMessageContentsAsync(History(), null, null, CancellationToken.None)) { }
+        });
+    }
+
+    [Fact]
+    public async Task Cancellation_does_not_become_provider_failure()
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        var service = CreateService(new StubHandler());
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+        {
+            await foreach (var _ in service.GetStreamingChatMessageContentsAsync(History(), null, null, cts.Token)) { }
+        });
+    }
+
     [Fact]
     public async Task Unconfigured_settings_fail_closed()
     {

@@ -1,17 +1,12 @@
 import {useEffect, useRef, useState} from 'react';
 import {createRoot} from 'react-dom/client';
+import {runChat, type Citation} from './chatStream';
 import './style.css';
 
 type Lang = 'es' | 'en';
 type Branding = {companyName: string; assistantName: string; logoUrl: string; defaultLanguage: Lang};
 type SessionUser = {displayName: string; roles: string[]; permissions: string[]};
 type Session = {isAuthenticated: boolean; user?: SessionUser};
-type Citation = {index: number; chunkId: number; documentId: string; title: string; version: string};
-type ChatEvent =
-  | {type: 'sources'; citations: Citation[]}
-  | {type: 'delta'; text: string}
-  | {type: 'done'; conversationId: string; limited: boolean; citations: Citation[]}
-  | {type: 'error'; message: string};
 
 const copy = {
   es: {
@@ -69,46 +64,6 @@ function readCsrfToken() {
   return cookie ? decodeURIComponent(cookie.slice(prefix.length)) : '';
 }
 
-async function runChat(
-  csrfToken: string,
-  message: string,
-  conversationId: string | null,
-  onEvent: (event: ChatEvent) => void,
-  signal: AbortSignal
-) {
-  const response = await fetch('/api/chat', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrfToken},
-    body: JSON.stringify({message, conversationId}),
-    signal
-  });
-  if (!response.ok) {
-    let errorText = '';
-    try {
-      const body = await response.json();
-      errorText = body.error ?? '';
-    } catch {
-      errorText = await response.text();
-    }
-    throw new Error(errorText || `HTTP ${response.status}`);
-  }
-  if (!response.body) throw new Error('No response body.');
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  for (;;) {
-    const {done, value} = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, {stream: true});
-    let index;
-    while ((index = buffer.indexOf('\n')) >= 0) {
-      const line = buffer.slice(0, index).trim();
-      buffer = buffer.slice(index + 1);
-      if (line) onEvent(JSON.parse(line) as ChatEvent);
-    }
-  }
-}
 function App() {
   const [lang, setLang] = useState<Lang>('es');
   const [brand, setBrand] = useState<Branding>({
@@ -193,15 +148,19 @@ function App() {
     abortRef.current = controller;
     try {
       await runChat(csrfToken, question, conversationId, event => {
-        if (event.type === 'sources') setSources(event.citations);
+        if (event.type === 'sources') return;
         else if (event.type === 'delta') setAnswer(current => current + event.text);
         else if (event.type === 'done') {
           setConversationId(event.conversationId);
           setLimited(event.limited);
+          setSources(event.citations);
         } else if (event.type === 'error') setChatError(event.message);
       }, controller.signal);
     } catch (e) {
       if (e instanceof Error && e.name === 'AbortError') return;
+      setAnswer('');
+      setSources([]);
+      setLimited(false);
       setChatError(t.chatError);
     } finally {
       setBusy(false);
